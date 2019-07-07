@@ -50,10 +50,20 @@ DROPOUT_CNN = 0.68
 
 W_Char_Embed = rand(CHAR_EMBED_DIMS, length(alphabet)) .- 0.5 # Bringing into range b/w -0.5 and 0.5
 
-char_representation = Chain(x -> reshape(x, size(x)..., 1,1),
+char_features = Chain(x -> reshape(x, size(x)..., 1,1),
       Dropout(DROPOUT_CNN),
       Conv((CHAR_EMBED_DIMS, CONV_WINDOW_LENGTH), 1=>CNN_OUTPUT_SIZE)
       x -> maximum(x, dims=2)
       )
+
+# 2. Word Embeddings
+
+embtable = load_embeddings(GloVe)
+get_word_index = Dict(word=>ii for (ii,word) in enumerate(embtable.vocab))
+
+function get_word_embedding(word)
+    emb = embtable.embeddings[:, get_word_index[word]]
+    return emb
+end
 
 # function test_raw_sentence # Convert unknown to UNK and to lowercase
