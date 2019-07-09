@@ -4,7 +4,7 @@ using TextAnalysis
 using WordTokenizers
 using Embeddings
 using Flux
-using Flux: onehot, Conv, param
+using Flux: onehot, Conv, param, onehotbatch
 
 CHAR_EMBED_DIMS = 25
 WORD_EMBED_DIMS = 50
@@ -70,7 +70,7 @@ get_char_from_index = Dict(value => key for (key, value) in get_char_index)
 ############# Creating onehoot vectors (useful for embeddings lookup), convenient
 # TODO: Minibatches
 onehotword(word) = onehot(get(get_word_index, lowercase(word), get_word_index[UNK_Word]), 1:embedding_vocab_length)
-onehotchars(word) = [onehot(get(get_char_index, c, get_char_index[UNK_char]), 1:length(alphabets)) for c in word]
+onehotchars(word) = onehotbatch([get(get_char_index, c, get_char_index[UNK_char]) for c in word], 1:length(alphabets))
 onehotlabel(label) = onehot(label, labels)
 
 oh_seq(arr, f) = [f(element) for element in arr]
@@ -96,30 +96,26 @@ LSTM_STATE_SIZE = 253
 DROPOUT_CNN = 0.68
 
 # 1. Dropout before conv, Max poll layer, PADDING on both sides, hyperparams = window size, output vector size.
-
-char_features = Chain(x -> reshape(x, size(x)..., 1,1),
+char_features = Chain(x -> W_Char_Embed * x,
+                      x -> reshape(x, size(x)..., 1,1),
                       Dropout(DROPOUT_CNN),
                       Conv((CHAR_EMBED_DIMS, CONV_WINDOW_LENGTH), 1=>CNN_OUTPUT_SIZE, pad=(0,2)),
-                      x -> maximum(x, dims=2)
-                     )
+                      x -> maximum(x, dims=2),
+                      x -> reshape(x, length(x),1)
+                )
 
 # 2. Input embeddings:
-
 # Maybe could use only the embeddings for the words needed
-# W_word_Embed = param(W_word_Embed)
+# W_word_Embed = param(W_word_Embed) # For trainable
 
-get_word_embedding(word) = W_word_Embed[:, get_word_index[word]]
-Change above to onehot
-
-
-input_embeddings(w, cs) = hcat(get_word_embedding(w), dropdims(char_features(cs)))
+get_word_embedding(w) = W_word_Embed * w # works coz - onehot
+input_embeddings(w, cs) = vcat(get_word_embedding(w), char_features(cs))
 
 # 3. Bi-LSTM
 bilstm_layer
 # TODO: Bias vectors are initialized to zero, except the bias bf for the forget gate in LSTM , which is initialized to 1.0
 
 # 4. Softmax / CRF Layer
-
 m(x,y) = softmax(blstm_layer(x,y))
 
 # function test_raw_sentence # Convert unknown to UNK and to lowercase
