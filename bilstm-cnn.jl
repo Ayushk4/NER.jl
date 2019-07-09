@@ -67,7 +67,7 @@ get_char_index = Dict(char => ii for (ii, char) in enumerate(alphabets))
 get_char_from_index = Dict(value => key for (key, value) in get_char_index)
 
 
-############# Creating onehoot vectors (useful for embeddings lookup)
+############# Creating onehoot vectors (useful for embeddings lookup), convenient
 # TODO: Minibatches
 onehotword(word) = onehot(get(get_word_index, lowercase(word), get_word_index[UNK_Word]), 1:embedding_vocab_length)
 onehotchars(word) = [onehot(get(get_char_index, c, get_char_index[UNK_char]), 1:length(alphabets)) for c in word]
@@ -85,11 +85,10 @@ Y_oh_train = [oh_seq(tags_sequence, onehotlabel) for tags_sequence in Y_train]
         length.(X_chars_train) == length.(Y_oh_train)
 
 #################### MODEL ######################
-# 1. Character Embeddings - Take care of unknown, add padding.
-# 2. Word Embeddings. - Take care of unknown
-# 3. hcat Character and Word Embeddings
-# 4. Bi-LSTM
-# 5. Softmax or CRF
+# 1. Character Embeddings with CNNs
+# 2. Obtain Word Embeddings, concatenate Char & Word Embeddings
+# 3. Bi-LSTM
+# 4. Softmax or CRF on each unit in sequence
 
 CNN_OUTPUT_SIZE = 53
 CONV_WINDOW_LENGTH = 3
@@ -98,32 +97,31 @@ DROPOUT_CNN = 0.68
 
 # 1. Dropout before conv, Max poll layer, PADDING on both sides, hyperparams = window size, output vector size.
 
-char_features = Chain(cs -> reshape(cs, size(x)..., 1,1),
+char_features = Chain(x -> reshape(x, size(x)..., 1,1),
                       Dropout(DROPOUT_CNN),
                       Conv((CHAR_EMBED_DIMS, CONV_WINDOW_LENGTH), 1=>CNN_OUTPUT_SIZE, pad=(0,2)),
                       x -> maximum(x, dims=2)
                      )
 
-# 2. Word Embeddings
+# 2. Input embeddings:
 
 # Maybe could use only the embeddings for the words needed
-
 # W_word_Embed = param(W_word_Embed)
 
 get_word_embedding(word) = W_word_Embed[:, get_word_index[word]]
 Change above to onehot
 
-# 3. Final input Embeddings
 
 input_embeddings(w, cs) = hcat(get_word_embedding(w), dropdims(char_features(cs)))
 
-# 4. Bi-LSTM
+# 3. Bi-LSTM
 bilstm_layer
 # TODO: Bias vectors are initialized to zero, except the bias bf for the forget gate in LSTM , which is initialized to 1.0
 
-# 5. Softmax
+# 4. Softmax / CRF Layer
 
 m(x,y) = softmax(blstm_layer(x,y))
 
 # function test_raw_sentence # Convert unknown to UNK and to lowercase
 # TODO: Test with and without lowercased chars in char embedding
+# TODO: Test with and without trainable embeddings.
