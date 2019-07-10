@@ -4,7 +4,7 @@ using TextAnalysis
 using WordTokenizers
 using Embeddings
 using Flux
-using Flux: onehot, Conv, param, onehotbatch
+using Flux: onehot, param, onehotbatch, Conv, LSTM, flip
 
 CHAR_EMBED_DIMS = 25
 WORD_EMBED_DIMS = 50
@@ -26,6 +26,7 @@ Y_train = [CorpusLoaders.named_entity.(sent) for sent in dataset]
 words_vocab = unique(vcat(X_train...))
 alphabets = unique(vcat(collect.(words_vocab)...))
 labels = unique(vcat(Y_train...))
+DENSE_OUT_SIZE = num_labels = length(labels)
 
 # TODO: Preprocessing: Change n't => not and Shuffle and all numbers to 0
 
@@ -94,11 +95,12 @@ CNN_OUTPUT_SIZE = 53
 CONV_WINDOW_LENGTH = 3
 LSTM_STATE_SIZE = 253
 DROPOUT_CNN = 0.68
+dropout = Dropout(DROPOUT_RATE)
 
 # 1. Dropout before conv, Max poll layer, PADDING on both sides, hyperparams = window size, output vector size.
 char_features = Chain(x -> W_Char_Embed * x,
                       x -> reshape(x, size(x)..., 1,1),
-                      Dropout(DROPOUT_CNN),
+                      dropout,
                       Conv((CHAR_EMBED_DIMS, CONV_WINDOW_LENGTH), 1=>CNN_OUTPUT_SIZE, pad=(0,2)),
                       x -> maximum(x, dims=2),
                       x -> reshape(x, length(x),1)
@@ -109,14 +111,24 @@ char_features = Chain(x -> W_Char_Embed * x,
 # W_word_Embed = param(W_word_Embed) # For trainable
 
 get_word_embedding(w) = W_word_Embed * w # works coz - onehot
-input_embeddings(w, cs) = vcat(get_word_embedding(w), char_features(cs))
+input_embeddings((w, cs)) = vcat(get_word_embedding(w), char_features(cs))
 
 # 3. Bi-LSTM
-bilstm_layer
+# Dropout before and after
+
+forward_lstm = LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE)
+backward_lstm(x) = flip(LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE))(x)
+
+bilstm_layer(x) = Chain(dropout,
+                        x -> vcat.(forward_lstm.(x), backward_lstm(x)),
+                        dropout
+                  )
+
 # TODO: Bias vectors are initialized to zero, except the bias bf for the forget gate in LSTM , which is initialized to 1.0
 
 # 4. Softmax / CRF Layer
-m(x,y) = softmax(blstm_layer(x,y))
+output_layer = Dense(LSTM_STATE_SIZE, DENSE_OUT_SIZE)
+m(xy) = softmax.(output_layer.(blstm_layer(input_embeddings.(xy))))
 
 # function test_raw_sentence # Convert unknown to UNK and to lowercase
 # TODO: Test with and without lowercased chars in char embedding
