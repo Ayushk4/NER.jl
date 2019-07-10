@@ -94,13 +94,14 @@ Y_oh_train = [oh_seq(tags_sequence, onehotlabel) for tags_sequence in Y_train]
 CNN_OUTPUT_SIZE = 53
 CONV_WINDOW_LENGTH = 3
 LSTM_STATE_SIZE = 253
-DROPOUT_CNN = 0.68
-dropout = Dropout(DROPOUT_RATE)
+DROPOUT_RATE_CNN = 0.68
+DROPOUT_INPUT_EMBEDDING = 0.68
+DROPOUT_OUT_LAYER = 0.68
 
 # 1. Dropout before conv, Max poll layer, PADDING on both sides, hyperparams = window size, output vector size.
 char_features = Chain(x -> W_Char_Embed * x,
                       x -> reshape(x, size(x)..., 1,1),
-                      dropout,
+                      Dropout(DROPOUT_RATE_CNN),
                       Conv((CHAR_EMBED_DIMS, CONV_WINDOW_LENGTH), 1=>CNN_OUTPUT_SIZE, pad=(0,2)),
                       x -> maximum(x, dims=2),
                       x -> reshape(x, length(x),1)
@@ -111,25 +112,31 @@ char_features = Chain(x -> W_Char_Embed * x,
 # W_word_Embed = param(W_word_Embed) # For trainable
 
 get_word_embedding(w) = W_word_Embed * w # works coz - onehot
-input_embeddings((w, cs)) = vcat(get_word_embedding(w), char_features(cs))
+
+# Dropout before LSTM
+dropout_embed = Dropout(DROPOUT_INPUT_EMBEDDING)
+input_embeddings((w, cs)) = dropout_embed(vcat(get_word_embedding(w), char_features(cs)))
 
 # 3. Bi-LSTM
-# Dropout before and after
 
 forward_lstm = LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE)
-backward_lstm(x) = flip(LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE))(x)
+backward_lstm(x) = flip(LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE), x)
 
-bilstm_layer(x) = Chain(dropout,
-                        x -> vcat.(forward_lstm.(x), backward_lstm(x)),
-                        dropout
-                  )
+bilstm_layer(x) = vcat.(forward_lstm.(x), backward_lstm(x))
 
 # TODO: Bias vectors are initialized to zero, except the bias bf for the forget gate in LSTM , which is initialized to 1.0
 
 # 4. Softmax / CRF Layer
-output_layer = Dense(LSTM_STATE_SIZE, DENSE_OUT_SIZE)
-m(xy) = softmax.(output_layer.(blstm_layer(input_embeddings.(xy))))
+# Dropout after LSTM
+output_layer = Chain(Dropout(DROPOUT_OUT_LAYER),
+                     Dense(LSTM_STATE_SIZE * 2, DENSE_OUT_SIZE), # multiply by `2` coz bi directional lstm
+                     softmax
+               )
+
+
+m(xy) = output_layer.(bilstm_layer(input_embeddings.(xy)))
+Input xy is of the form (words, chars)
 
 # function test_raw_sentence # Convert unknown to UNK and to lowercase
-# TODO: Test with and without lowercased chars in char embedding
-# TODO: Test with and without trainable embeddings.
+# TODO: Try with and without lowercased chars in char embedding
+# TODO: Try with and without trainable embeddings.
