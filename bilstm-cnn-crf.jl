@@ -145,7 +145,12 @@ loss(w_cs, y) =  crf_loss(c, m(w_cs), y)
 
 opt = Momentum(η, ρ)
 
-Flux.train!(loss, params(m, c)
+ps = params(input_embeddings, forward_lstm, backward_lstm, c)
+
+# loss(w_cs, y) =
+# opt =
+data = zip(collect(zip(X_words_train, X_chars_train)), Y_oh_train)
+Flux.train!(loss, ps, data, opt)
 # TODO: gradient clipping and rate decay
 # batch size = 10
 

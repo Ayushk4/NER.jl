@@ -138,10 +138,11 @@ bilstm_layer_out(x) = output_layer1.(forward_lstm.(x)) .+
 
 m(w_cs) = bilstm_layer_out(input_embeddings.(w_cs))
 
-loss =
+ce_seq(x_seq, y_seq) = sum([Flux.crossentropy(x,y) for (x,y) in zip(x_seq, y_seq)])
+loss(w_xs, y) = ce_seq(m(w_cs), y)
 
 α = 0.0105
-opt = Flux.Descent()
+opt = Flux.Descent(α)
 ps = params(output_layer1, output_layer2, input_embeddings, forward_lstm, backward_lstm)
 
 # loss(w_cs, y) =
