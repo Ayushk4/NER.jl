@@ -1,10 +1,11 @@
 using CorpusLoaders
 using MultiResolutionIterators
 using TextAnalysis
+using TextAnalysis: CRF, crf_loss
 using WordTokenizers
 using Embeddings
 using Flux
-using Flux: onehot, param, onehotbatch, Conv, LSTM, flip
+using Flux: onehot, param, onehotbatch, Conv, LSTM, flip, Momentum
 
 CHAR_EMBED_DIMS = 25
 WORD_EMBED_DIMS = 50
@@ -121,33 +122,33 @@ input_embeddings((w, cs)) = dropout_embed(vcat(get_word_embedding(w), char_featu
 forward_lstm = LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE)
 backward_lstm(x) = flip(LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE), x)
 
-# 4. Softmax
+bilstm_layer(x) = vcat.(forward_lstm.(x), backward_lstm(x))
+
+# TODO: Bias vectors are initialized to zero, except the bias bf for the forget gate in LSTM , which is initialized to 1.0
+
+# 4. Softmax / CRF Layer
 # Dropout after LSTM
-output_layer1 = Chain(Dropout(DROPOUT_OUT_LAYER),
-                     Dense(LSTM_STATE_SIZE, DENSE_OUT_SIZE),
-                     softmax
-               )
 
-output_layer2 = Chain(Dropout(DROPOUT_OUT_LAYER),
-                  Dense(LSTM_STATE_SIZE, DENSE_OUT_SIZE),
-                  softmax
-            )
+dropout = Dropout(DROPOUT_OUT_LAYER)
+m(w_cs) = dropout.(bilstm_layer(input_embeddings.(w_cs)))
 
-bilstm_layer_out(x) = output_layer1.(forward_lstm.(x)) .+
-                        output_layer2.(backward_lstm(x))
 
-m(w_cs) = bilstm_layer_out(input_embeddings.(w_cs))
+using TextAnalysis: crf_loss, CRF
+Flux.@treelike TextAnalysis.CRF
+c = TextAnalysis.CRF(num_labels, LSTM_STATE_SIZE * 2)
 
-loss =
+loss(w_cs, y) =  crf_loss(c, m(w_cs), y)
 
-α = 0.0105
-opt = Flux.Descent()
-ps = params(output_layer1, output_layer2, input_embeddings, forward_lstm, backward_lstm)
+η = 0.01 #
+β = 0.05 # rate decay
+ρ = 0.9 # momentum
 
-# loss(w_cs, y) =
-# opt =
-data = zip(collect(zip(X_words_train, X_chars_train)), Y_oh_train)
-Flux.train!(loss, ps, data, opt)
+opt = Momentum(η, ρ)
+
+Flux.train!(loss, params(m, c)
+# TODO: gradient clipping and rate decay
+# batch size = 10
+
 
 # function test_raw_sentence # Convert unknown to UNK and to lowercase
 # TODO: Try with and without lowercased chars in char embedding
