@@ -6,16 +6,18 @@ using WordTokenizers
 using Embeddings
 using Flux
 using Flux: onehot, param, onehotbatch, Conv, LSTM, flip, Momentum
+using Tracker
+using BSON: @save
 
 CHAR_EMBED_DIMS = 25
 WORD_EMBED_DIMS = 50
 DESIRED_TAG_SCHEME = "BIOES"
 
-train = load(CoNLL(), "train") # training set
-# test = load(CoNLL(), "test") # test set
-# dev = load(CoNLL(), "dev") # dev set
+train_set = load(CoNLL(), "train") # training set
+# test_set = load(CoNLL(), "test") # test set
+# dev_set = load(CoNLL(), "dev") # dev set
 
-dataset = flatten_levels(train, lvls(CoNLL, :document)) |> full_consolidate
+dataset = flatten_levels(train_set, lvls(CoNLL, :document)) |> full_consolidate
 
 typeof(dataset)
 
@@ -33,7 +35,6 @@ DENSE_OUT_SIZE = num_labels = length(labels)
 # TODO: Preprocessing: Change n't => not and Shuffle and all numbers to 0
 
 
-
 #### Word Embeddings
 # using these indices to generate the flux one hot input word embeddings vectors.
 
@@ -41,7 +42,7 @@ DENSE_OUT_SIZE = num_labels = length(labels)
 embtable = load_embeddings(GloVe)
 get_word_index = Dict(word => ii for (ii, word) in enumerate(embtable.vocab))
 get_word_from_index = Dict(value => key for (key, value) in get_word_index)
-W_word_Embed = embtable.embeddings
+W_word_Embed = (embtable.embeddings)
 
 # One Vec for unknown chars
 UNK_Word = "<UNK>"
@@ -52,9 +53,8 @@ embedding_vocab_length = length(get_word_index) + 1
 get_word_index[UNK_Word] = UNK_Word_Idx
 get_word_from_index[UNK_Word_Idx] = UNK_Word
 W_word_Embed = hcat(W_word_Embed, rand(WORD_EMBED_DIMS))
+W_word_Embed = Float32.(W_word_Embed)
 @assert size(W_word_Embed, 2) == embedding_vocab_length
-
-
 
 ##### Char Embeddings
 UNK_char = '¿'
@@ -64,7 +64,8 @@ sort!(unique!(alphabets))
 
 # using these indices to generate the flux one hot input Char embeddings vectors.
 
-W_Char_Embed = rand(CHAR_EMBED_DIMS, length(alphabets)) .- 0.5 # Bringing into range b/w -0.5 and 0.5
+W_Char_Embed = rand(CHAR_EMBED_DIMS, length(alphabets))
+W_Char_Embed = Float32.(W_Char_Embed)
 W_Char_Embed = param(W_Char_Embed)
 get_char_index = Dict(char => ii for (ii, char) in enumerate(alphabets))
 get_char_from_index = Dict(value => key for (key, value) in get_char_index)
@@ -75,12 +76,16 @@ get_char_from_index = Dict(value => key for (key, value) in get_char_index)
 onehotword(word) = onehot(get(get_word_index, lowercase(word), get_word_index[UNK_Word]), 1:embedding_vocab_length)
 onehotchars(word) = onehotbatch([get(get_char_index, c, get_char_index[UNK_char]) for c in word], 1:length(alphabets))
 onehotlabel(label) = onehot(label, labels)
+onehotinput(word) = (onehot(get(get_word_index, lowercase(word), get_word_index[UNK_Word]), 1:embedding_vocab_length),
+                onehotbatch([get(get_char_index, c, get_char_index[UNK_char]) for c in word], 1:length(alphabets)))
 
 oh_seq(arr, f) = [f(element) for element in arr]
 
 X_words_train = [oh_seq(sentence, onehotword) for sentence in X_train] # A Bunch of Sequences of words, i.e. sentences
 
 X_chars_train = [oh_seq(sentence, onehotchars) for sentence in X_train] # A Bunch Sequences of Array of Chars, done to prevent repeated computations.
+
+X_input_train = [oh_seq(sentence, onehotinput) for sentence in X_train]
 
 Y_oh_train = [oh_seq(tags_sequence, onehotlabel) for tags_sequence in Y_train]
 
@@ -104,12 +109,11 @@ char_features = Chain(x -> W_Char_Embed * x,
                       Dropout(DROPOUT_RATE_CNN),
                       Conv((CHAR_EMBED_DIMS, CONV_WINDOW_LENGTH), 1=>CNN_OUTPUT_SIZE, pad=(0,2)),
                       x -> maximum(x, dims=2),
-                      x -> reshape(x, length(x),1)
-                )
+                      x -> reshape(x, length(x),1))
 
 # 2. Input embeddings:
 # Maybe could use only the embeddings for the words needed
-# W_word_Embed = param(W_word_Embed) # For trainable
+W_word_Embed = param(W_word_Embed) # For trainable
 
 get_word_embedding(w) = W_word_Embed * w # works coz - onehot
 
@@ -120,7 +124,8 @@ input_embeddings((w, cs)) = dropout_embed(vcat(get_word_embedding(w), char_featu
 # 3. Bi-LSTM
 
 forward_lstm = LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE)
-backward_lstm(x) = flip(LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE), x)
+backward = LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE)
+backward_lstm(x) = flip(backward, x)
 
 bilstm_layer(x) = vcat.(forward_lstm.(x), backward_lstm(x))
 
@@ -132,7 +137,6 @@ bilstm_layer(x) = vcat.(forward_lstm.(x), backward_lstm(x))
 dropout = Dropout(DROPOUT_OUT_LAYER)
 m(w_cs) = dropout.(bilstm_layer(input_embeddings.(w_cs)))
 
-
 using TextAnalysis: crf_loss, CRF
 Flux.@treelike TextAnalysis.CRF
 c = TextAnalysis.CRF(num_labels, LSTM_STATE_SIZE * 2)
@@ -143,17 +147,49 @@ loss(w_cs, y) =  crf_loss(c, m(w_cs), y)
 β = 0.05 # rate decay
 ρ = 0.9 # momentum
 
+# TODO: rate decay
 opt = Momentum(η, ρ)
+data = zip(X_input_train, Y_oh_train)
 
-ps = params(input_embeddings, forward_lstm, backward_lstm, c)
+ps = params(params(char_features)..., params(W_word_Embed)..., params(W_Char_Embed)..., params(forward_lstm, backward)..., params(c)...)
 
-# loss(w_cs, y) =
-# opt =
-data = zip(collect(zip(X_words_train, X_chars_train)), Y_oh_train)
-Flux.train!(loss, ps, data, opt)
+NUM_EPOCHS = 5
+
+function save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward_lstm, c)
+    char_f_cpu = char_features |> cpu
+    W_word_cpu = W_word_Embed |> cpu
+    W_char_cpu = W_Char_Embed |> cpu
+    forward_lstm_cpu = forward_lstm |> cpu
+    backward_lstm_cpu = backward_lstm |> cpu
+    crf_cpu = c |> cpu
+
+    @save "./weights/char_f_cpu.bson" char_f_cpu
+    @save "./weights/W_word_cpu.bson" W_word_cpu
+    @save "./weights/W_char_cpu.bson" W_char_cpu
+    @save "./weights/forward_lstm.bson" forward_lstm_cpu
+    @save "./weights/backward_lstm.bson" backward_lstm_cpu
+    @save "./weights/crf.bson" crf_cpu
+end
+
+function train()
+    i = 0
+    for epoch in 1:NUM_EPOCHS
+        println("----------------------- EPOCH : $epoch ----------------------")
+        for d in data
+            grads = Tracker.gradient(() -> loss(d[1], d[2]), ps)
+            Flux.Optimise.update!(opt, ps, grads)
+
+            if i % 1000
+                save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward_lstm, c)
+            end
+            i += 1
+        end
+    end
+end
+
+
 # TODO: gradient clipping and rate decay
 # batch size = 10
-
 
 # function test_raw_sentence # Convert unknown to UNK and to lowercase
 # TODO: Try with and without lowercased chars in char embedding
