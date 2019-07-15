@@ -5,9 +5,10 @@ using TextAnalysis: CRF, crf_loss
 using WordTokenizers
 using Embeddings
 using Flux
-using Flux: onehot, param, onehotbatch, Conv, LSTM, flip, Momentum
+using Flux: onehot, param, onehotbatch, Conv, LSTM, flip, Momentum, reset!
 using Tracker
 using BSON: @save
+using CuArrays
 
 CHAR_EMBED_DIMS = 25
 WORD_EMBED_DIMS = 50
@@ -18,14 +19,19 @@ train_set = load(CoNLL(), "train") # training set
 # dev_set = load(CoNLL(), "dev") # dev set
 
 dataset = flatten_levels(train_set, lvls(CoNLL, :document)) |> full_consolidate
-
-typeof(dataset)
+# dev_dataset = flatten_levels(dev_set, lvls(CoNLL, :document)) |> full_consolidate
 
 X_train = [CorpusLoaders.word.(sent) for sent in dataset]
 Y_train = [CorpusLoaders.named_entity.(sent) for sent in dataset]
 tag_scheme!.(Y_train, "BIO2", DESIRED_TAG_SCHEME)
 
 @assert length.(X_train) == length.(Y_train)
+
+# X_dev = [CorpusLoaders.word.(sent) for sent in test_dataset]
+# Y_dev = [CorpusLoaders.named_entity.(sent) for sent in test_dataset]
+# tag_scheme!.(Y_dev, "BIO2", DESIRED_TAG_SCHEME)
+#
+# @assert length.(X_dev) == length.(Y_dev)
 
 words_vocab = unique(vcat(X_train...))
 alphabets = unique(vcat(collect.(words_vocab)...))
@@ -81,16 +87,15 @@ onehotinput(word) = (onehot(get(get_word_index, lowercase(word), get_word_index[
 
 oh_seq(arr, f) = [f(element) for element in arr]
 
-X_words_train = [oh_seq(sentence, onehotword) for sentence in X_train] # A Bunch of Sequences of words, i.e. sentences
-
-X_chars_train = [oh_seq(sentence, onehotchars) for sentence in X_train] # A Bunch Sequences of Array of Chars, done to prevent repeated computations.
-
+# X_words_train = [oh_seq(sentence, onehotword) for sentence in X_train] # A Bunch of Sequences of words, i.e. sentences
+# X_chars_train = [oh_seq(sentence, onehotchars) for sentence in X_train] # A Bunch Sequences of Array of Chars, done to prevent repeated computations.
 X_input_train = [oh_seq(sentence, onehotinput) for sentence in X_train]
-
 Y_oh_train = [oh_seq(tags_sequence, onehotlabel) for tags_sequence in Y_train]
 
-@assert length.(X_train) == length.(X_words_train) ==
-        length.(X_chars_train) == length.(Y_oh_train)
+# X_input_dev = [oh_seq(sentence, onehotinput) for sentence in X_dev]
+# Y_oh_dev = [oh_seq(tags_sequence, onehotlabel) for tags_sequence in Y_dev]
+
+@assert length.(X_train) == length.(X_input_train) == length.(Y_oh_train)
 
 #################### MODEL ######################
 # 1. Character Embeddings with CNNs
@@ -113,35 +118,35 @@ char_features = Chain(x -> W_Char_Embed * x,
 
 # 2. Input embeddings:
 # Maybe could use only the embeddings for the words needed
-W_word_Embed = param(W_word_Embed) # For trainable
 
-get_word_embedding(w) = W_word_Embed * w # works coz - onehot
+W_word_Embed = param(W_word_Embed) |> gpu# For trainable
+get_word_embedding(w) = W_word_Embed * w |> gpu# works coz - onehot
 
 # Dropout before LSTM
-dropout_embed = Dropout(DROPOUT_INPUT_EMBEDDING)
-input_embeddings((w, cs)) = dropout_embed(vcat(get_word_embedding(w), char_features(cs)))
+dropout_embed = Dropout(DROPOUT_INPUT_EMBEDDING) |> gpu
+input_embeddings((w, cs)) = dropout_embed(vcat(get_word_embedding(w), char_features(cs))) |> gpu
 
 # 3. Bi-LSTM
 
-forward_lstm = LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE)
-backward = LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE)
-backward_lstm(x) = flip(backward, x)
+forward_lstm = LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE) |> gpu
+backward = LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE) |> gpu
+backward_lstm(x) = flip(backward, x) |> gpu
 
-bilstm_layer(x) = vcat.(forward_lstm.(x), backward_lstm(x))
+bilstm_layer(x) = vcat.(forward_lstm.(x), backward_lstm(x)) |> gpu
 
 # TODO: Bias vectors are initialized to zero, except the bias bf for the forget gate in LSTM , which is initialized to 1.0
 
 # 4. Softmax / CRF Layer
 # Dropout after LSTM
 
-dropout = Dropout(DROPOUT_OUT_LAYER)
-m(w_cs) = dropout.(bilstm_layer(input_embeddings.(w_cs)))
+dropout = Dropout(DROPOUT_OUT_LAYER) |> gpu
+m(w_cs) = dropout.(bilstm_layer(input_embeddings.(w_cs))) |> gpu
 
 using TextAnalysis: crf_loss, CRF
 Flux.@treelike TextAnalysis.CRF
-c = TextAnalysis.CRF(num_labels, LSTM_STATE_SIZE * 2)
+c = TextAnalysis.CRF(num_labels, LSTM_STATE_SIZE * 2) |> gpu
 
-loss(w_cs, y) =  crf_loss(c, m(w_cs), y)
+loss(w_cs, y) =  crf_loss(c, m(w_cs), y) |> gpu
 
 η = 0.01 #
 β = 0.05 # rate decay
@@ -173,14 +178,21 @@ end
 
 function train()
     i = 0
+    reset!(forward_lstm)
+    reset!(backward)
+
     for epoch in 1:NUM_EPOCHS
         println("----------------------- EPOCH : $epoch ----------------------")
         for d in data
             grads = Tracker.gradient(() -> loss(d[1], d[2]), ps)
+            reset!(forward_lstm)
+            reset!(backward)
+
             Flux.Optimise.update!(opt, ps, grads)
 
-            if i % 1000
+            if i % 1000 == 0
                 save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward_lstm, c)
+                println(sum([loss(dd[1], dd[2]) for dd in data])/length(data))
             end
             i += 1
         end
