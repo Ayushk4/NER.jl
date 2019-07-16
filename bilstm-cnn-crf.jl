@@ -143,7 +143,7 @@ m(w_cs) = dropout.(bilstm_layer(input_embeddings.(w_cs)))
 
 using TextAnalysis: crf_loss, CRF
 Flux.@treelike TextAnalysis.CRF
-c = TextAnalysis.CRF(num_labels, LSTM_STATE_SIZE * 2)
+c = TextAnalysis.CRF(num_labels, LSTM_STATE_SIZE * 2) |> gpu
 
 loss(w_cs, y) =  crf_loss(c, m(w_cs), y)
 

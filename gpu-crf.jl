@@ -38,13 +38,11 @@ alphabets = unique(vcat(collect.(words_vocab)...))
 labels = unique(vcat(Y_train...))
 DENSE_OUT_SIZE = num_labels = length(labels)
 
-# TODO: Preprocessing: Change n't => not and Shuffle and all numbers to 0
 
 
 #### Word Embeddings
 # using these indices to generate the flux one hot input word embeddings vectors.
 
-# TODO: EMBEDDINGS OF the input size.
 embtable = load_embeddings(GloVe)
 get_word_index = Dict(word => ii for (ii, word) in enumerate(embtable.vocab))
 get_word_from_index = Dict(value => key for (key, value) in get_word_index)
@@ -89,8 +87,10 @@ oh_seq(arr, f) = [f(element) for element in arr]
 
 # X_words_train = [oh_seq(sentence, onehotword) for sentence in X_train] # A Bunch of Sequences of words, i.e. sentences
 # X_chars_train = [oh_seq(sentence, onehotchars) for sentence in X_train] # A Bunch Sequences of Array of Chars, done to prevent repeated computations.
-X_input_train = [oh_seq(sentence, onehotinput) for sentence in X_train]
+X_input_train = [cu.(oh_seq(sentence, onehotinput)) for sentence in X_train]
 Y_oh_train = [oh_seq(tags_sequence, onehotlabel) for tags_sequence in Y_train]
+
+Y_oh_train = cu.(Y_oh_train)
 
 # X_input_dev = [oh_seq(sentence, onehotinput) for sentence in X_dev]
 # Y_oh_dev = [oh_seq(tags_sequence, onehotlabel) for tags_sequence in Y_dev]
@@ -130,9 +130,9 @@ input_embeddings((w, cs)) = dropout_embed(vcat(get_word_embedding(w), char_featu
 
 forward_lstm = LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE) |> gpu
 backward = LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE) |> gpu
-backward_lstm(x) = flip(backward, x) |> gpu
+backward_lstm(x) = reverse(backward.(reverse(x)))
 
-bilstm_layer(x) = vcat.(forward_lstm.(x), backward_lstm(x)) |> gpu
+bilstm_layer(x) = vcat.(forward_lstm.(x), backward_lstm(x))
 
 # TODO: Bias vectors are initialized to zero, except the bias bf for the forget gate in LSTM , which is initialized to 1.0
 
@@ -140,13 +140,17 @@ bilstm_layer(x) = vcat.(forward_lstm.(x), backward_lstm(x)) |> gpu
 # Dropout after LSTM
 
 dropout = Dropout(DROPOUT_OUT_LAYER) |> gpu
-m(w_cs) = dropout.(bilstm_layer(input_embeddings.(w_cs))) |> gpu
+m = Chain(x -> input_embeddings.(x),
+                bilstm_layer,
+                x -> dropout.(x)) |> gpu
+
+# dropout.(bilstm_layer(input_embeddings.(w_cs))) |> gpu
 
 using TextAnalysis: crf_loss, CRF
 Flux.@treelike TextAnalysis.CRF
 c = TextAnalysis.CRF(num_labels, LSTM_STATE_SIZE * 2) |> gpu
 
-loss(w_cs, y) =  crf_loss(c, m(w_cs), y) |> gpu
+loss(w_cs, y) =  crf_loss_gpu(c, m(w_cs), y)
 
 η = 0.01 #
 β = 0.05 # rate decay
@@ -156,9 +160,11 @@ loss(w_cs, y) =  crf_loss(c, m(w_cs), y) |> gpu
 opt = Momentum(η, ρ)
 data = zip(X_input_train, Y_oh_train)
 
-ps = params(params(char_features)..., params(W_word_Embed)..., params(W_Char_Embed)..., params(forward_lstm, backward)..., params(c)...)
-
 NUM_EPOCHS = 5
+
+# d = collect(data)[1]
+# input_seq = m(d[1])
+# label_seq = d[2]
 
 function save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward_lstm, c)
     char_f_cpu = char_features |> cpu
@@ -184,11 +190,12 @@ function train()
     for epoch in 1:NUM_EPOCHS
         println("----------------------- EPOCH : $epoch ----------------------")
         for d in data
-            grads = Tracker.gradient(() -> loss(d[1], d[2]), ps)
             reset!(forward_lstm)
             reset!(backward)
 
+            grads = Tracker.gradient(() -> loss(d[1], d[2]), params(params(char_features)..., params(W_word_Embed)..., params(W_Char_Embed)..., params(forward_lstm, backward)..., params(c)...))
             Flux.Optimise.update!(opt, ps, grads)
+
 
             if i % 1000 == 0
                 save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward_lstm, c)
@@ -199,10 +206,12 @@ function train()
     end
 end
 
+train()
 
-# TODO: gradient clipping and rate decay
+# TODO: rate decay
 # batch size = 10
 
 # function test_raw_sentence # Convert unknown to UNK and to lowercase
-# TODO: Try with and without lowercased chars in char embedding
-# TODO: Try with and without trainable embeddings.
+# Try with and without lowercased chars in char embedding
+# Try with and without trainable embeddings.
+# try: Preprocessing: Change n't => not and Shuffle and all numbers to 0
