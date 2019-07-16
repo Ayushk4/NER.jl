@@ -1,11 +1,11 @@
 using CorpusLoaders
 using MultiResolutionIterators
 using TextAnalysis
-using TextAnalysis: CRF, crf_loss
+using TextAnalysis: CRF, crf_loss_gpu
 using WordTokenizers
 using Embeddings
 using Flux
-using Flux: onehot, param, onehotbatch, Conv, LSTM, flip, Momentum, reset!
+using Flux: onehot, param, onehotbatch, Conv, LSTM, flip, Momentum, reset!, onecold
 using Tracker
 using BSON: @save
 using CuArrays
@@ -146,11 +146,11 @@ m = Chain(x -> input_embeddings.(x),
 
 # dropout.(bilstm_layer(input_embeddings.(w_cs))) |> gpu
 
-using TextAnalysis: crf_loss, CRF
+using TextAnalysis: crf_loss_gpu, CRF
 Flux.@treelike TextAnalysis.CRF
 c = TextAnalysis.CRF(num_labels, LSTM_STATE_SIZE * 2) |> gpu
 
-loss(w_cs, y) =  crf_loss_gpu(c, m(w_cs), y)
+loss(x, y) =  crf_loss_gpu(c, m(x), y)
 
 η = 0.01 #
 β = 0.05 # rate decay
@@ -162,9 +162,9 @@ data = zip(X_input_train, Y_oh_train)
 
 NUM_EPOCHS = 5
 
-# d = collect(data)[1]
-# input_seq = m(d[1])
-# label_seq = d[2]
+d = collect(data)[1]
+input_seq = m(d[1])
+label_seq = d[2]
 
 function save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward_lstm, c)
     char_f_cpu = char_features |> cpu
