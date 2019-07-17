@@ -26,8 +26,8 @@ Y_train = [CorpusLoaders.named_entity.(sent) for sent in dataset]
 tag_scheme!.(Y_train, "BIO2", DESIRED_TAG_SCHEME)
 @assert length.(X_train) == length.(Y_train)
 
-X_dev = [CorpusLoaders.word.(sent) for sent in test_dataset]
-Y_dev = [CorpusLoaders.named_entity.(sent) for sent in test_dataset]
+X_dev = [CorpusLoaders.word.(sent) for sent in dev_dataset]
+Y_dev = [CorpusLoaders.named_entity.(sent) for sent in dev_dataset]
 tag_scheme!.(Y_dev, "BIO2", DESIRED_TAG_SCHEME)
 @assert length.(X_dev) == length.(Y_dev)
 
