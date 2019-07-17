@@ -16,22 +16,20 @@ DESIRED_TAG_SCHEME = "BIOES"
 
 train_set = load(CoNLL(), "train") # training set
 # test_set = load(CoNLL(), "test") # test set
-# dev_set = load(CoNLL(), "dev") # dev set
+dev_set = load(CoNLL(), "dev") # dev set
 
 dataset = flatten_levels(train_set, lvls(CoNLL, :document)) |> full_consolidate
-# dev_dataset = flatten_levels(dev_set, lvls(CoNLL, :document)) |> full_consolidate
+dev_dataset = flatten_levels(dev_set, lvls(CoNLL, :document)) |> full_consolidate
 
 X_train = [CorpusLoaders.word.(sent) for sent in dataset]
 Y_train = [CorpusLoaders.named_entity.(sent) for sent in dataset]
 tag_scheme!.(Y_train, "BIO2", DESIRED_TAG_SCHEME)
-
 @assert length.(X_train) == length.(Y_train)
 
-# X_dev = [CorpusLoaders.word.(sent) for sent in test_dataset]
-# Y_dev = [CorpusLoaders.named_entity.(sent) for sent in test_dataset]
-# tag_scheme!.(Y_dev, "BIO2", DESIRED_TAG_SCHEME)
-#
-# @assert length.(X_dev) == length.(Y_dev)
+X_dev = [CorpusLoaders.word.(sent) for sent in test_dataset]
+Y_dev = [CorpusLoaders.named_entity.(sent) for sent in test_dataset]
+tag_scheme!.(Y_dev, "BIO2", DESIRED_TAG_SCHEME)
+@assert length.(X_dev) == length.(Y_dev)
 
 words_vocab = unique(vcat(X_train...))
 alphabets = unique(vcat(collect.(words_vocab)...))
@@ -92,8 +90,8 @@ Y_oh_train = [oh_seq(tags_sequence, onehotlabel) for tags_sequence in Y_train]
 
 Y_oh_train = cu.(Y_oh_train)
 
-# X_input_dev = [oh_seq(sentence, onehotinput) for sentence in X_dev]
-# Y_oh_dev = [oh_seq(tags_sequence, onehotlabel) for tags_sequence in Y_dev]
+X_input_dev = [oh_seq(sentence, onehotinput) for sentence in X_dev]
+Y_oh_dev = [oh_seq(tags_sequence, onehotlabel) for tags_sequence in Y_dev]
 
 @assert length.(X_train) == length.(X_input_train) == length.(Y_oh_train)
 
@@ -193,13 +191,14 @@ function train()
         for d in data
             reset!(forward_lstm)
             reset!(backward)
-
             grads = Tracker.gradient(() -> loss(d[1], d[2]), params(params(char_features)..., params(W_word_Embed)..., params(W_Char_Embed)..., params(forward_lstm, backward)..., params(c)...))
             Flux.Optimise.update!(opt,  params(params(char_features)..., params(W_word_Embed)..., params(W_Char_Embed)..., params(forward_lstm, backward)..., params(c)...), grads)
 
             if i % 1000 == 0
                 save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward_lstm, c)
-                println(sum([loss(dd[1], dd[2]) for dd in data])/length(data))
+                reset!(forward_lstm)
+                reset!(backward)
+                println(loss(X_input_dev[1], Y_oh_dev[1]))
             end
             i += 1
         end
