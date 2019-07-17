@@ -150,9 +150,10 @@ using TextAnalysis: crf_loss_gpu, CRF
 Flux.@treelike TextAnalysis.CRF
 c = TextAnalysis.CRF(num_labels, LSTM_STATE_SIZE * 2) |> gpu
 
-loss(x, y) =  crf_loss_gpu(c, m(x), y)
+crf_loss_stable_gpu(c, x, y) = TextAnalysis.forward_algorithm_stable(c, x) - TextAnalysis.score_sequence(c, x, y)
+loss(x, y) =  crf_loss_stable_gpu(c, m(x), y)
 
-η = 0.01 #
+η = 0.005 # learning rate
 β = 0.05 # rate decay
 ρ = 0.9 # momentum
 
@@ -162,9 +163,9 @@ data = zip(X_input_train, Y_oh_train)
 
 NUM_EPOCHS = 5
 
-d = collect(data)[1]
-input_seq = m(d[1])
-label_seq = d[2]
+# d = collect(data)[1]
+# input_seq = m(d[1])
+# label_seq = d[2]
 
 function save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward_lstm, c)
     char_f_cpu = char_features |> cpu
@@ -194,8 +195,7 @@ function train()
             reset!(backward)
 
             grads = Tracker.gradient(() -> loss(d[1], d[2]), params(params(char_features)..., params(W_word_Embed)..., params(W_Char_Embed)..., params(forward_lstm, backward)..., params(c)...))
-            Flux.Optimise.update!(opt, ps, grads)
-
+            Flux.Optimise.update!(opt,  params(params(char_features)..., params(W_word_Embed)..., params(W_Char_Embed)..., params(forward_lstm, backward)..., params(c)...), grads)
 
             if i % 1000 == 0
                 save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward_lstm, c)
