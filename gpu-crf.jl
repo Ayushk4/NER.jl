@@ -152,7 +152,11 @@ using TextAnalysis: crf_loss, CRF
 Flux.@treelike TextAnalysis.CRF
 c = TextAnalysis.CRF(num_labels) |> gpu
 
-loss(x, y) =  crf_loss(c, m(x), y)
+init_α = fill(-10000, (c.n + 2, 1))
+init_α[c.n + 1] = 0
+init_α = cu(init_α)
+
+loss(x, y) =  crf_loss(c, m(x), y, init_α)
 
 η = 0.005 # learning rate
 β = 0.05 # rate decay
@@ -168,19 +172,21 @@ NUM_EPOCHS = 5
 # input_seq = m(d[1])
 # label_seq = d[2]
 
-function save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward_lstm, c)
+function save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward_lstm, d_out, c)
     char_f_cpu = char_features |> cpu
     W_word_cpu = W_word_Embed |> cpu
     W_char_cpu = W_Char_Embed |> cpu
     forward_lstm_cpu = forward_lstm |> cpu
     backward_lstm_cpu = backward_lstm |> cpu
     crf_cpu = c |> cpu
+    d_cpu = d_out |> cpu
 
     @save "./weights/char_f_cpu.bson" char_f_cpu
     @save "./weights/W_word_cpu.bson" W_word_cpu
     @save "./weights/W_char_cpu.bson" W_char_cpu
     @save "./weights/forward_lstm.bson" forward_lstm_cpu
     @save "./weights/backward_lstm.bson" backward_lstm_cpu
+    @save "./weights/d_cpu.bson" d_cpu
     @save "./weights/crf.bson" crf_cpu
 end
 
@@ -194,11 +200,11 @@ function train()
         for d in data
             reset!(forward_lstm)
             reset!(backward)
-            grads = Tracker.gradient(() -> loss(d[1], d[2]), params(params(char_features)..., params(W_word_Embed)..., params(W_Char_Embed)..., params(forward_lstm, backward)..., params(c)...))
-            Flux.Optimise.update!(opt,  params(params(char_features)..., params(W_word_Embed)..., params(W_Char_Embed)..., params(forward_lstm, backward)..., params(c)...), grads)
+            grads = Tracker.gradient(() -> loss(d[1], d[2]), params(params(char_features)..., params(W_word_Embed)..., params(W_Char_Embed)..., params(forward_lstm, backward)..., params(d_out)..., params(c)...))
+            Flux.Optimise.update!(opt,  params(params(char_features)..., params(W_word_Embed)..., params(W_Char_Embed)..., params(forward_lstm, backward)..., params(d_out)..., params(c)...), grads)
 
             if i % 1000 == 0
-                save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward_lstm, c)
+                save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward_lstm, d_out, c)
                 reset!(forward_lstm)
                 reset!(backward)
                 println(loss(X_input_dev[1], Y_oh_dev[1]))
