@@ -1,7 +1,7 @@
 using CorpusLoaders
 using MultiResolutionIterators
 using TextAnalysis
-using TextAnalysis: CRF, crf_loss_gpu
+using TextAnalysis: CRF, crf_loss
 using WordTokenizers
 using Embeddings
 using Flux
@@ -138,12 +138,12 @@ bilstm_layer(x) = vcat.(forward_lstm.(x), backward_lstm(x))
 # Dropout after LSTM
 
 dropout = Dropout(DROPOUT_OUT_LAYER) |> gpu
-d = Dense(LSTM_STATE_SIZE * 2, num_labels + 2) |> gpu
+d_out = Dense(LSTM_STATE_SIZE * 2, DENSE_OUT_SIZE + 2) |> gpu
 
 m = Chain(x -> input_embeddings.(x),
                 bilstm_layer,
                 x -> dropout.(x),
-                x -> d.(x)) |> gpu
+                x -> d_out.(x)) |> gpu
 
 # dropout.(bilstm_layer(input_embeddings.(w_cs))) |> gpu
 
