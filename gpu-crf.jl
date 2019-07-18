@@ -138,18 +138,21 @@ bilstm_layer(x) = vcat.(forward_lstm.(x), backward_lstm(x))
 # Dropout after LSTM
 
 dropout = Dropout(DROPOUT_OUT_LAYER) |> gpu
+d = Dense(LSTM_STATE_SIZE * 2, num_labels + 2) |> gpu
+
 m = Chain(x -> input_embeddings.(x),
                 bilstm_layer,
-                x -> dropout.(x)) |> gpu
+                x -> dropout.(x),
+                x -> d.(x)) |> gpu
 
 # dropout.(bilstm_layer(input_embeddings.(w_cs))) |> gpu
 
-using TextAnalysis: crf_loss_gpu, CRF
-Flux.@treelike TextAnalysis.CRF
-c = TextAnalysis.CRF(num_labels, LSTM_STATE_SIZE * 2) |> gpu
+using TextAnalysis: crf_loss, CRF
 
-crf_loss_stable_gpu(c, x, y) = TextAnalysis.forward_algorithm_stable(c, x) - TextAnalysis.score_sequence(c, x, y)
-loss(x, y) =  crf_loss_stable_gpu(c, m(x), y)
+Flux.@treelike TextAnalysis.CRF
+c = TextAnalysis.CRF(num_labels) |> gpu
+
+loss(x, y) =  crf_loss(c, m(x), y)
 
 η = 0.005 # learning rate
 β = 0.05 # rate decay
@@ -183,10 +186,10 @@ end
 
 function train()
     i = 0
-    reset!(forward_lstm)
-    reset!(backward)
 
     for epoch in 1:NUM_EPOCHS
+        reset!(forward_lstm)
+        reset!(backward)
         println("----------------------- EPOCH : $epoch ----------------------")
         for d in data
             reset!(forward_lstm)
