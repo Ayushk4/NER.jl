@@ -179,7 +179,7 @@ function sent_to_label(sent)
     reset!(backward)
     d = cu.(oh_seq(tokenize(sent), onehotinput))
     x_seq = m(d)
-    ohs = TextAnalysis.viterbi_decode(c, cpu(x_seq), init_α)
+    ohs = TextAnalysis.viterbi_decode(cpu(c), cpu.(x_seq), cpu(init_α))
 
     println(on(ohs))
     on(ohs)
@@ -208,7 +208,7 @@ function save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, b
     @save "./weights/crf.bson" crf_cpu
 end
 
-function train()
+function train(NUM_EPOCHS)
     i = 0
 
     for epoch in 1:NUM_EPOCHS
@@ -232,8 +232,14 @@ function train()
     end
 end
 
-train()
+train(5)
 
+sent_to_label("Avik Sengupta is mentoring this.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring Google.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring in Google.")
+
+train(2)
 
 sent_to_label("Avik Sengupta is mentoring this.")
 sent_to_label("Avik Sengupta and oxinabox are mentoring.")
