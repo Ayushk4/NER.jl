@@ -172,12 +172,30 @@ NUM_EPOCHS = 5
 # input_seq = m(d[1])
 # label_seq = d[2]
 
-function save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward_lstm, d_out, c)
+on(tags) = [onecold(i, labels) for i in tags]
+
+function sent_to_label(sent)
+    reset!(forward_lstm)
+    reset!(backward)
+    d = cu.(oh_seq(tokenize(sent), onehotinput))
+    x_seq = m(d)
+    ohs = TextAnalysis.viterbi_decode(c, cpu(x_seq), init_α)
+
+    println(on(ohs))
+    on(ohs)
+end
+
+sent_to_label("Avik Sengupta is mentoring this.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring Google.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring in Google.")
+
+function save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward, d_out, c)
     char_f_cpu = char_features |> cpu
     W_word_cpu = W_word_Embed |> cpu
     W_char_cpu = W_Char_Embed |> cpu
     forward_lstm_cpu = forward_lstm |> cpu
-    backward_lstm_cpu = backward_lstm |> cpu
+    backward_lstm_cpu = backward |> cpu
     crf_cpu = c |> cpu
     d_cpu = d_out |> cpu
 
@@ -204,7 +222,7 @@ function train()
             Flux.Optimise.update!(opt,  params(params(char_features)..., params(W_word_Embed)..., params(W_Char_Embed)..., params(forward_lstm, backward)..., params(d_out)..., params(c)...), grads)
 
             if i % 1000 == 0
-                save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward_lstm, d_out, c)
+                save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward, d_out, c)
                 reset!(forward_lstm)
                 reset!(backward)
                 println(loss(X_input_dev[1], Y_oh_dev[1]))
@@ -215,6 +233,12 @@ function train()
 end
 
 train()
+
+
+sent_to_label("Avik Sengupta is mentoring this.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring Google.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring in Google.")
 
 # TODO: rate decay
 # batch size = 10
