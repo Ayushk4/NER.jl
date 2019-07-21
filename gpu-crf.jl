@@ -225,7 +225,7 @@ sent_to_label("Avik Sengupta and oxinabox are mentoring Google.")
 sent_to_label("Avik Sengupta and oxinabox are mentoring in Google.")
 
 
-function save_weights(, W_word_Embed, W_Char_Embed, forward_lstm, backward, d_out, c)
+function save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward, d_out, c)
     char_f_cpu = char_features |> cpu
     W_word_cpu = W_word_Embed |> cpu
     W_char_cpu = W_Char_Embed |> cpu
