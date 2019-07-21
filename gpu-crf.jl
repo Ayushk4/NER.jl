@@ -9,6 +9,7 @@ using Flux: onehot, param, onehotbatch, Conv, LSTM, flip, Momentum, reset!, onec
 using Tracker
 using BSON: @save, @load
 using CuArrays
+println("Dependecies Loaded")
 
 CHAR_EMBED_DIMS = 25
 WORD_EMBED_DIMS = 50
@@ -58,6 +59,7 @@ W_word_Embed = hcat(W_word_Embed, rand(WORD_EMBED_DIMS))
 W_word_Embed = Float32.(W_word_Embed)
 @assert size(W_word_Embed, 2) == embedding_vocab_length
 
+
 ##### Char Embeddings
 UNK_char = '¿'
 @assert UNK_char ∉ alphabets
@@ -72,6 +74,7 @@ W_Char_Embed = param(W_Char_Embed)
 get_char_index = Dict(char => ii for (ii, char) in enumerate(alphabets))
 get_char_from_index = Dict(value => key for (key, value) in get_char_index)
 
+println("Embeddings Made")
 
 ############# Creating onehoot vectors (useful for embeddings lookup), convenient
 # TODO: Minibatches
@@ -170,7 +173,7 @@ data = zip(X_input_train, Y_oh_train)
 # input_seq = m(d[1])
 # label_seq = d[2]
 
-println(d_out.W[1])
+println("Model Made")
 
 function load_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward, c, d_out)
     char_f_cpu = char_features |> cpu
@@ -200,6 +203,7 @@ function load_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, b
     return char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward, c, d_out
 end
 
+println(d_out.W[1])
 char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward, c, d_out =
         load_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward, c, d_out)
 
@@ -219,11 +223,18 @@ function sent_to_label(sent)
     on(ohs)
 end
 
-sent_to_label("Avik Sengupta is mentoring this.")
-sent_to_label("Avik Sengupta and oxinabox are mentoring.")
-sent_to_label("Avik Sengupta and oxinabox are mentoring Google.")
-sent_to_label("Avik Sengupta and oxinabox are mentoring in Google.")
-
+function try_outs()
+    Flux.testmode!(char_features)
+    Flux.testmode!(dropout)
+    Flux.testmode!(dropout_embed)
+    sent_to_label("Avik Sengupta is mentoring this.")
+    sent_to_label("Avik Sengupta and oxinabox are mentoring.")
+    sent_to_label("Avik Sengupta and oxinabox are mentoring Google.")
+    sent_to_label("Avik Sengupta and oxinabox are mentoring in Google.")
+    Flux.testmode!(char_features, false)
+    Flux.testmode!(dropout, false)
+    Flux.testmode!(dropout_embed, false)
+end
 
 function save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward, d_out, c)
     char_f_cpu = char_features |> cpu
@@ -253,6 +264,9 @@ function train(EPOCHS)
         reset!(forward_lstm)
         reset!(backward)
         println(loss(X_input_dev[1], Y_oh_dev[1]))
+        reset!(forward_lstm)
+        reset!(backward)
+        try_outs()
         for d in data
             reset!(forward_lstm)
             reset!(backward)
@@ -263,45 +277,11 @@ function train(EPOCHS)
             # end
             # i += 1
         end
-
-
     end
 end
 
-train(5)
+train(25)
 
-sent_to_label("Avik Sengupta is mentoring this.")
-sent_to_label("Avik Sengupta and oxinabox are mentoring.")
-sent_to_label("Avik Sengupta and oxinabox are mentoring Google.")
-sent_to_label("Avik Sengupta and oxinabox are mentoring in Google.")
-
-train(5)
-
-sent_to_label("Avik Sengupta is mentoring this.")
-sent_to_label("Avik Sengupta and oxinabox are mentoring.")
-sent_to_label("Avik Sengupta and oxinabox are mentoring Google.")
-sent_to_label("Avik Sengupta and oxinabox are mentoring in Google.")
-
-train(5)
-
-sent_to_label("Avik Sengupta is mentoring this.")
-sent_to_label("Avik Sengupta and oxinabox are mentoring.")
-sent_to_label("Avik Sengupta and oxinabox are mentoring Google.")
-sent_to_label("Avik Sengupta and oxinabox are mentoring in Google.")
-
-train(5)
-
-sent_to_label("Avik Sengupta is mentoring this.")
-sent_to_label("Avik Sengupta and oxinabox are mentoring.")
-sent_to_label("Avik Sengupta and oxinabox are mentoring Google.")
-sent_to_label("Avik Sengupta and oxinabox are mentoring in Google.")
-
-train(5)
-
-sent_to_label("Avik Sengupta is mentoring this.")
-sent_to_label("Avik Sengupta and oxinabox are mentoring.")
-sent_to_label("Avik Sengupta and oxinabox are mentoring Google.")
-sent_to_label("Avik Sengupta and oxinabox are mentoring in Google.")
 
 # TODO: rate decay
 # batch size = 10
