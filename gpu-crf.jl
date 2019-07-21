@@ -7,7 +7,7 @@ using Embeddings
 using Flux
 using Flux: onehot, param, onehotbatch, Conv, LSTM, flip, Momentum, reset!, onecold
 using Tracker
-using BSON: @save
+using BSON: @save, @load
 using CuArrays
 
 CHAR_EMBED_DIMS = 25
@@ -166,11 +166,45 @@ loss(x, y) =  crf_loss(c, m(x), y, init_α)
 opt = Momentum(η, ρ)
 data = zip(X_input_train, Y_oh_train)
 
-NUM_EPOCHS = 5
-
 # d = collect(data)[1]
 # input_seq = m(d[1])
 # label_seq = d[2]
+
+println(d_out.W[1])
+
+function load_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward, c, d_out)
+    char_f_cpu = char_features |> cpu
+    W_word_cpu = W_word_Embed |> cpu
+    W_char_cpu = W_Char_Embed |> cpu
+    forward_lstm_cpu = forward_lstm |> cpu
+    backward_lstm_cpu = backward |> cpu
+    crf_cpu = c |> cpu
+    d_cpu = d_out |> cpu
+
+    @load "./weights/char_f_cpu.bson" char_f_cpu
+    @load "./weights/W_word_cpu.bson" W_word_cpu
+    @load "./weights/W_char_cpu.bson" W_char_cpu
+    @load "./weights/forward_lstm.bson" forward_lstm_cpu
+    @load "./weights/backward_lstm.bson" backward_lstm_cpu
+    @load "./weights/d_cpu.bson" d_cpu
+    @load "./weights/crf.bson" crf_cpu
+
+    char_features = char_f_cpu |> gpu
+    W_word_Embed = W_word_cpu |> gpu
+    W_Char_Embed = W_char_cpu |> gpu
+    forward_lstm = forward_lstm_cpu |> gpu
+    backward = backward_lstm_cpu  |> gpu
+    c = crf_cpu |> gpu
+    d_out = d_cpu |> gpu
+
+    return char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward, c, d_out
+end
+
+char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward, c, d_out =
+        load_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward, c, d_out)
+
+println(d_out.W[1])
+println("Loaded Weights")
 
 on(tags) = [onecold(i, labels) for i in tags]
 
@@ -190,7 +224,8 @@ sent_to_label("Avik Sengupta and oxinabox are mentoring.")
 sent_to_label("Avik Sengupta and oxinabox are mentoring Google.")
 sent_to_label("Avik Sengupta and oxinabox are mentoring in Google.")
 
-function save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward, d_out, c)
+
+function save_weights(, W_word_Embed, W_Char_Embed, forward_lstm, backward, d_out, c)
     char_f_cpu = char_features |> cpu
     W_word_cpu = W_word_Embed |> cpu
     W_char_cpu = W_Char_Embed |> cpu
@@ -199,7 +234,7 @@ function save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, b
     crf_cpu = c |> cpu
     d_cpu = d_out |> cpu
 
-    @save "./weights/char_f_cpu.bson" char_f_cpu
+    @save "./weights/char_f_cpu.bson" char_features
     @save "./weights/W_word_cpu.bson" W_word_cpu
     @save "./weights/W_char_cpu.bson" W_char_cpu
     @save "./weights/forward_lstm.bson" forward_lstm_cpu
@@ -208,27 +243,28 @@ function save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, b
     @save "./weights/crf.bson" crf_cpu
 end
 
-function train(NUM_EPOCHS)
-    i = 0
 
-    for epoch in 1:NUM_EPOCHS
+function train(EPOCHS)
+    # i = 0
+
+    for epoch in 1:EPOCHS
+        println("----------------------- EPOCH : $epoch ----------------------")
+        save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward, d_out, c)
         reset!(forward_lstm)
         reset!(backward)
-        println("----------------------- EPOCH : $epoch ----------------------")
+        println(loss(X_input_dev[1], Y_oh_dev[1]))
         for d in data
             reset!(forward_lstm)
             reset!(backward)
             grads = Tracker.gradient(() -> loss(d[1], d[2]), params(params(char_features)..., params(W_word_Embed)..., params(W_Char_Embed)..., params(forward_lstm, backward)..., params(d_out)..., params(c)...))
             Flux.Optimise.update!(opt,  params(params(char_features)..., params(W_word_Embed)..., params(W_Char_Embed)..., params(forward_lstm, backward)..., params(d_out)..., params(c)...), grads)
 
-            if i % 1000 == 0
-                save_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward, d_out, c)
-                reset!(forward_lstm)
-                reset!(backward)
-                println(loss(X_input_dev[1], Y_oh_dev[1]))
-            end
-            i += 1
+            # if i % 1000 == 0
+            # end
+            # i += 1
         end
+
+
     end
 end
 
@@ -239,7 +275,28 @@ sent_to_label("Avik Sengupta and oxinabox are mentoring.")
 sent_to_label("Avik Sengupta and oxinabox are mentoring Google.")
 sent_to_label("Avik Sengupta and oxinabox are mentoring in Google.")
 
-train(2)
+train(5)
+
+sent_to_label("Avik Sengupta is mentoring this.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring Google.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring in Google.")
+
+train(5)
+
+sent_to_label("Avik Sengupta is mentoring this.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring Google.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring in Google.")
+
+train(5)
+
+sent_to_label("Avik Sengupta is mentoring this.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring Google.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring in Google.")
+
+train(5)
 
 sent_to_label("Avik Sengupta is mentoring this.")
 sent_to_label("Avik Sengupta and oxinabox are mentoring.")
