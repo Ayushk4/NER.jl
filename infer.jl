@@ -9,7 +9,6 @@ using Flux: onehot, param, onehotbatch, Conv, LSTM, flip, Momentum, reset!, onec
 using Tracker
 using BSON: @save, @load
 using CuArrays
-println("Dependecies Loaded")
 
 CHAR_EMBED_DIMS = 25
 WORD_EMBED_DIMS = 50
@@ -38,6 +37,7 @@ labels = unique(vcat(Y_train...))
 DENSE_OUT_SIZE = num_labels = length(labels)
 
 
+
 #### Word Embeddings
 # using these indices to generate the flux one hot input word embeddings vectors.
 
@@ -58,7 +58,6 @@ W_word_Embed = hcat(W_word_Embed, rand(WORD_EMBED_DIMS))
 W_word_Embed = Float32.(W_word_Embed)
 @assert size(W_word_Embed, 2) == embedding_vocab_length
 
-
 ##### Char Embeddings
 UNK_char = '¿'
 @assert UNK_char ∉ alphabets
@@ -73,7 +72,6 @@ W_Char_Embed = param(W_Char_Embed)
 get_char_index = Dict(char => ii for (ii, char) in enumerate(alphabets))
 get_char_from_index = Dict(value => key for (key, value) in get_char_index)
 
-println("Embeddings Made")
 
 ############# Creating onehoot vectors (useful for embeddings lookup), convenient
 # TODO: Minibatches
@@ -109,13 +107,10 @@ LSTM_STATE_SIZE = 253
 DROPOUT_RATE_CNN = DROPOUT_INPUT_EMBEDDING = DROPOUT_OUT_LAYER = 0.68
 
 # 1. Dropout before conv, Max poll layer, PADDING on both sides, hyperparams = window size, output vector size.
-conv1 = Conv((CHAR_EMBED_DIMS, CONV_WINDOW_LENGTH), 1=>CNN_OUTPUT_SIZE, pad=(0,2))
-dropout1 = Dropout(DROPOUT_RATE_CNN)
-
 char_features = Chain(x -> W_Char_Embed * x,
                       x -> reshape(x, size(x)..., 1,1),
-                      dropout1,
-                      conv1,
+                      Dropout(DROPOUT_RATE_CNN),
+                      Conv((CHAR_EMBED_DIMS, CONV_WINDOW_LENGTH), 1=>CNN_OUTPUT_SIZE, pad=(0,2)),
                       x -> maximum(x, dims=2),
                       x -> reshape(x, length(x),1))
 
@@ -142,7 +137,7 @@ bilstm_layer(x) = vcat.(forward_lstm.(x), backward_lstm(x))
 # 4. Softmax / CRF Layer
 # Dropout after LSTM
 
-dropout2 = Dropout(DROPOUT_OUT_LAYER) |> gpu
+dropout = Dropout(DROPOUT_OUT_LAYER) |> gpu
 d_out = Dense(LSTM_STATE_SIZE * 2, DENSE_OUT_SIZE + 2) |> gpu
 
 m = Chain(x -> input_embeddings.(x),
@@ -168,13 +163,17 @@ loss(x, y) =  crf_loss(c, m(x), y, init_α)
 ρ = 0.9 # momentum
 
 # TODO: rate decay
-opt = Flux.Optimiser(ExpDecay(β), Momentum(η, ρ))
+opt = Momentum(η, ρ)
 data = zip(X_input_train, Y_oh_train)
 
-println("Model Built")
+# d = collect(data)[1]
+# input_seq = m(d[1])
+# label_seq = d[2]
 
-function load_weights(conv1, W_word_Embed, W_Char_Embed, forward_lstm, backward, c, d_out)
-    conv_cpu = conv1 |> cpu
+println(d_out.W[1])
+
+function load_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward, c, d_out)
+    char_f_cpu = char_features |> cpu
     W_word_cpu = W_word_Embed |> cpu
     W_char_cpu = W_Char_Embed |> cpu
     forward_lstm_cpu = forward_lstm |> cpu
@@ -182,7 +181,7 @@ function load_weights(conv1, W_word_Embed, W_Char_Embed, forward_lstm, backward,
     crf_cpu = c |> cpu
     d_cpu = d_out |> cpu
 
-    @load "./weights/conv_cpu.bson" conv_cpu
+    @load "./weights/char_f_cpu.bson" char_f_cpu
     @load "./weights/W_word_cpu.bson" W_word_cpu
     @load "./weights/W_char_cpu.bson" W_char_cpu
     @load "./weights/forward_lstm.bson" forward_lstm_cpu
@@ -190,7 +189,7 @@ function load_weights(conv1, W_word_Embed, W_Char_Embed, forward_lstm, backward,
     @load "./weights/d_cpu.bson" d_cpu
     @load "./weights/crf.bson" crf_cpu
 
-    conv1 = conv_cpu |> gpu
+    char_features = char_f_cpu |> gpu
     W_word_Embed = W_word_cpu |> gpu
     W_Char_Embed = W_char_cpu |> gpu
     forward_lstm = forward_lstm_cpu |> gpu
@@ -198,16 +197,14 @@ function load_weights(conv1, W_word_Embed, W_Char_Embed, forward_lstm, backward,
     c = crf_cpu |> gpu
     d_out = d_cpu |> gpu
 
-    return conv1, W_word_Embed, W_Char_Embed, forward_lstm, backward, c, d_out
+    return char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward, c, d_out
 end
 
-#### To load
-# println(d_out.W[1])
-# conv1, W_word_Embed, W_Char_Embed, forward_lstm, backward, c, d_out =
-        # load_weights(conv1, W_word_Embed, W_Char_Embed, forward_lstm, backward, c, d_out)
+char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward, c, d_out =
+        load_weights(char_features, W_word_Embed, W_Char_Embed, forward_lstm, backward, c, d_out)
 
-# println(d_out.W[1])
-# println("Loaded Weights")
+println(d_out.W[1])
+println("Loaded Weights")
 
 on(tags) = [onecold(i, labels) for i in tags]
 
@@ -221,89 +218,11 @@ function sent_to_label(sent)
     println(on(ohs))
     on(ohs)
 end
+Flux.testmode!(char_features)
+Flux.testmode!(dropout)
+Flux.testmode!(dropout_embed)
 
-compare_label_to_oh(ohs, y) = sum([(a.ix == b.ix : 1 ? 0) for (a, b) in zip(ohx, y)])
-function try_outs()
-    Flux.testmode!(dropout1)
-    Flux.testmode!(dropout2)
-    Flux.testmode!(dropout_embed)
-    sent_to_label("Avik Sengupta is mentoring this.")
-    sent_to_label("Avik Sengupta and oxinabox are mentoring.")
-    sent_to_label("Avik Sengupta and oxinabox are mentoring Google.")
-    sent_to_label("Avik Sengupta and oxinabox are mentoring in Google.")
-
-    num_rights = 0
-    num_total = 0
-    for x, y in zip(X_input_dev, Y_oh_dev)
-        reset!(forward_lstm)
-        reset!(backward)
-        x_seq = m(x)
-        ohs = TextAnalysis.viterbi_decode(cpu(c), cpu.(x_seq), cpu(init_α))
-
-        num_rights += compare_label_to_oh(ohs, y)
-        num_total += length(x)
-    end
-    reset!(forward_lstm)
-    reset!(backward)
-    Flux.testmode!(dropout1, false)
-    Flux.testmode!(dropout2, false)
-    Flux.testmode!(dropout_embed, false)
-
-    accu = num_rights/num_total
-    println("Dev set accuracy = $(accu)")
-end
-
-function save_weights(EPOCH, conv1, W_word_Embed, W_Char_Embed, forward_lstm, backward, d_out, c)
-    conv_cpu = conv1 |> cpu
-    W_word_cpu = W_word_Embed |> cpu
-    W_char_cpu = W_Char_Embed |> cpu
-    forward_lstm_cpu = forward_lstm |> cpu
-    backward_lstm_cpu = backward |> cpu
-    crf_cpu = c |> cpu
-    d_cpu = d_out |> cpu
-
-    @save "./weights/conv_cpu$(EPOCH).bson" conv_cpu
-    @save "./weights/W_word_cpu$(EPOCH).bson" W_word_cpu
-    @save "./weights/W_char_cpu$(EPOCH).bson" W_char_cpu
-    @save "./weights/forward_lstm$(EPOCH).bson" forward_lstm_cpu
-    @save "./weights/backward_lstm$(EPOCH).bson" backward_lstm_cpu
-    @save "./weights/d_cpu.bson$(EPOCH)" d_cpu
-    @save "./weights/crf.bson$(EPOCH)" crf_cpu
-end
-
-
-function train(EPOCHS)
-    reset!(forward_lstm)
-    reset!(backward)
-    for epoch in 1:EPOCHS
-        println("----------------------- EPOCH : $epoch ----------------------")
-        if epoch % 2 == 1
-            save_weights(epoch, conv_cpu, W_word_Embed, W_Char_Embed, forward_lstm, backward, d_out, c)
-            reset!(forward_lstm)
-            reset!(backward)
-            try_outs()
-        end
-
-        for d in data
-            reset!(forward_lstm)
-            reset!(backward)
-            grads = Tracker.gradient(() -> loss(d[1], d[2]), params(params(conv1)..., params(W_word_Embed)..., params(W_Char_Embed)..., params(forward_lstm, backward)..., params(d_out)..., params(c)...))
-            Flux.Optimise.update!(opt,  params(params(conv1)..., params(W_word_Embed)..., params(W_Char_Embed)..., params(forward_lstm, backward)..., params(d_out)..., params(c)...), grads)
-        end
-        reset!(forward_lstm)
-        reset!(backward)
-    end
-end
-
-train(50)
-reset!(forward_lstm)
-reset!(backward)
-save_weights(epoch, conv_cpu, W_word_Embed, W_Char_Embed, forward_lstm, backward, d_out, c)
-try_outs()
-
-# batch size = 10
-
-# function test_raw_sentence # Convert unknown to UNK and to lowercase
-# Try with and without lowercased chars in char embedding
-# Try with and without trainable embeddings.
-# try: Preprocessing: Change n't => not and Shuffle and all numbers to 0
+sent_to_label("Avik Sengupta is mentoring this.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring Google.")
+sent_to_label("Avik Sengupta and oxinabox are mentoring in Google.")
