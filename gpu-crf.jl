@@ -222,7 +222,7 @@ function sent_to_label(sent)
     on(ohs)
 end
 
-compare_label_to_oh(ohs, y) = sum([(a.ix == b.ix : 1 ? 0) for (a, b) in zip(ohx, y)])
+compare_label_to_oh(ohs, y) = sum([(a.ix == b.ix ? 1 : 0) for (a, b) in zip(ohx, y)])
 function try_outs()
     Flux.testmode!(dropout1)
     Flux.testmode!(dropout2)
