@@ -9,10 +9,11 @@ using Flux: onehot, param, onehotbatch, Conv, LSTM, flip, Momentum, reset!, onec
 using Tracker
 using BSON: @save, @load
 using CuArrays
+using LinearAlgebra
 println("Dependecies Loaded")
 
 CHAR_EMBED_DIMS = 25
-WORD_EMBED_DIMS = 50
+WORD_EMBED_DIMS = 100
 DESIRED_TAG_SCHEME = "BIOES"
 
 train_set = load(CoNLL(), "train") # training set
@@ -41,7 +42,7 @@ DENSE_OUT_SIZE = num_labels = length(labels)
 #### Word Embeddings
 # using these indices to generate the flux one hot input word embeddings vectors.
 
-embtable = load_embeddings(GloVe)
+embtable = load_embeddings(GloVe, 2)
 get_word_index = Dict(word => ii for (ii, word) in enumerate(embtable.vocab))
 get_word_from_index = Dict(value => key for (key, value) in get_word_index)
 W_word_Embed = (embtable.embeddings)
@@ -103,10 +104,10 @@ Y_oh_dev = [oh_seq(tags_sequence, onehotlabel) for tags_sequence in Y_dev]
 # 3. Bi-LSTM
 # 4. Softmax or CRF on each unit in sequence
 
-CNN_OUTPUT_SIZE = 53
+CNN_OUTPUT_SIZE = 30
 CONV_WINDOW_LENGTH = 3
-LSTM_STATE_SIZE = 253
-DROPOUT_RATE_CNN = DROPOUT_INPUT_EMBEDDING = DROPOUT_OUT_LAYER = 0.68
+LSTM_STATE_SIZE = 200
+DROPOUT_RATE_CNN = DROPOUT_INPUT_EMBEDDING = DROPOUT_OUT_LAYER = 0.5
 
 # 1. Dropout before conv, Max poll layer, PADDING on both sides, hyperparams = window size, output vector size.
 conv1 = Conv((CHAR_EMBED_DIMS, CONV_WINDOW_LENGTH), 1=>CNN_OUTPUT_SIZE, pad=(0,2))
@@ -147,7 +148,7 @@ d_out = Dense(LSTM_STATE_SIZE * 2, DENSE_OUT_SIZE + 2) |> gpu
 
 m = Chain(x -> input_embeddings.(x),
                 bilstm_layer,
-                x -> dropout.(x),
+                x -> dropout2.(x),
                 x -> d_out.(x)) |> gpu
 
 # dropout.(bilstm_layer(input_embeddings.(w_cs))) |> gpu
@@ -163,7 +164,7 @@ init_α = cu(init_α)
 
 loss(x, y) =  crf_loss(c, m(x), y, init_α)
 
-η = 0.005 # learning rate
+η = 0.015 # learning rate
 β = 0.05 # rate decay
 ρ = 0.9 # momentum
 
@@ -173,33 +174,33 @@ data = zip(X_input_train, Y_oh_train)
 
 println("Model Built")
 
-function load_weights(conv1, W_word_Embed, W_Char_Embed, forward_lstm, backward, c, d_out)
-    conv_cpu = conv1 |> cpu
-    W_word_cpu = W_word_Embed |> cpu
-    W_char_cpu = W_Char_Embed |> cpu
-    forward_lstm_cpu = forward_lstm |> cpu
-    backward_lstm_cpu = backward |> cpu
-    crf_cpu = c |> cpu
-    d_cpu = d_out |> cpu
-
-    @load "./weights/conv_cpu.bson" conv_cpu
-    @load "./weights/W_word_cpu.bson" W_word_cpu
-    @load "./weights/W_char_cpu.bson" W_char_cpu
-    @load "./weights/forward_lstm.bson" forward_lstm_cpu
-    @load "./weights/backward_lstm.bson" backward_lstm_cpu
-    @load "./weights/d_cpu.bson" d_cpu
-    @load "./weights/crf.bson" crf_cpu
-
-    conv1 = conv_cpu |> gpu
-    W_word_Embed = W_word_cpu |> gpu
-    W_Char_Embed = W_char_cpu |> gpu
-    forward_lstm = forward_lstm_cpu |> gpu
-    backward = backward_lstm_cpu  |> gpu
-    c = crf_cpu |> gpu
-    d_out = d_cpu |> gpu
-
-    return conv1, W_word_Embed, W_Char_Embed, forward_lstm, backward, c, d_out
-end
+# function load_weights(conv1, W_word_Embed, W_Char_Embed, forward_lstm, backward, c, d_out)
+#     conv_cpu = conv1 |> cpu
+#     W_word_cpu = W_word_Embed |> cpu
+#     W_char_cpu = W_Char_Embed |> cpu
+#     forward_lstm_cpu = forward_lstm |> cpu
+#     backward_lstm_cpu = backward |> cpu
+#     crf_cpu = c |> cpu
+#     d_cpu = d_out |> cpu
+#
+#     @load "./weights/conv_cpu.bson" conv_cpu
+#     @load "./weights/W_word_cpu.bson" W_word_cpu
+#     @load "./weights/W_char_cpu.bson" W_char_cpu
+#     @load "./weights/forward_lstm.bson" forward_lstm_cpu
+#     @load "./weights/backward_lstm.bson" backward_lstm_cpu
+#     @load "./weights/d_cpu.bson" d_cpu
+#     @load "./weights/crf.bson" crf_cpu
+#
+#     conv1 = conv_cpu |> gpu
+#     W_word_Embed = W_word_cpu |> gpu
+#     W_Char_Embed = W_char_cpu |> gpu
+#     forward_lstm = forward_lstm_cpu |> gpu
+#     backward = backward_lstm_cpu  |> gpu
+#     c = crf_cpu |> gpu
+#     d_out = d_cpu |> gpu
+#
+#     return conv1, W_word_Embed, W_Char_Embed, forward_lstm, backward, c, d_out
+# end
 
 #### To load
 # println(d_out.W[1])
@@ -208,52 +209,65 @@ end
 
 # println(d_out.W[1])
 # println("Loaded Weights")
+#
+# on(tags) = [onecold(i, labels) for i in tags]
+#
+# function sent_to_label(sent)
+#     reset!(forward_lstm)
+#     reset!(backward)
+#     d = cu.(oh_seq(tokenize(sent), onehotinput))
+#     x_seq = m(d)
+#     ohs = TextAnalysis.viterbi_decode(cpu(c), cpu.(x_seq), cpu(init_α))
+#
+#     println(on(ohs))
+#     on(ohs)
+# end
 
-on(tags) = [onecold(i, labels) for i in tags]
-
-function sent_to_label(sent)
-    reset!(forward_lstm)
-    reset!(backward)
-    d = cu.(oh_seq(tokenize(sent), onehotinput))
-    x_seq = m(d)
-    ohs = TextAnalysis.viterbi_decode(cpu(c), cpu.(x_seq), cpu(init_α))
-
-    println(on(ohs))
-    on(ohs)
+function find_precision(confusion_matrix)
+    s = sum(confusion_matrix, dims=1)'
+    dg = diag(confusion_matrix)
+    labels = [[1, 7, 8, 14], [3,11, 12, 13], [4, 5, 9, 10], [6, 15, 16 ,17], [2]]
+    label_wise(labels_indices) = sum([dg[i] for i in labels_indices]) / sum([s[i] for i in labels_indices])
+    return sum([label_wise(labels_indices) for labels_indices in labels]) / 5
 end
 
-compare_label_to_oh(ohs, y) = sum([(a.ix == b.ix ? 1 : 0) for (a, b) in zip(ohx, y)])
+function find_recall(confusion_matrix)
+    s = sum(confusion_matrix, dims=2)
+    dg = diag(confusion_matrix)
+    labels = [[1, 7, 8, 14], [3,11, 12, 13], [4, 5, 9, 10], [6, 15, 16 ,17], [2]]
+    label_wise(labels_indices) = sum([dg[i] for i in labels_indices]) / sum([s[i] for i in labels_indices])
+    return sum([label_wise(labels_indices) for labels_indices in labels]) / 5
+end
+
+compare_label_to_oh(ohs, y) = sum([(a.ix == b.ix ? 1 : 0) for (a, b) in zip(ohs, y)])
 function try_outs()
     Flux.testmode!(dropout1)
     Flux.testmode!(dropout2)
     Flux.testmode!(dropout_embed)
-    sent_to_label("Avik Sengupta is mentoring this.")
-    sent_to_label("Avik Sengupta and oxinabox are mentoring.")
-    sent_to_label("Avik Sengupta and oxinabox are mentoring Google.")
-    sent_to_label("Avik Sengupta and oxinabox are mentoring in Google.")
 
-    num_rights = 0
-    num_total = 0
-    for x, y in zip(X_input_dev, Y_oh_dev)
+    confusion_matrix = zeros(Int, (19, 19))
+    for (x, y) in zip(X_input_dev, Y_oh_dev)
         reset!(forward_lstm)
         reset!(backward)
         x_seq = m(x)
         ohs = TextAnalysis.viterbi_decode(cpu(c), cpu.(x_seq), cpu(init_α))
 
-        num_rights += compare_label_to_oh(ohs, y)
-        num_total += length(x)
+        for d in zip(ohs, y)
+            confusion_matrix[d[1].ix, d[2].ix] += 1
+        end
     end
-    reset!(forward_lstm)
-    reset!(backward)
+
+    prec = find_precision(confusion_matrix)
+    rc = find_recall(confusion_matrix)
+    println("Precision and recall are:", prec, " ", rc)
+    println("F1 is:", (2 * prec * rc) / (prec + rc))
+
     Flux.testmode!(dropout1, false)
     Flux.testmode!(dropout2, false)
     Flux.testmode!(dropout_embed, false)
-
-    accu = num_rights/num_total
-    println("Dev set accuracy = $(accu)")
 end
 
-function save_weights(EPOCH, conv1, W_word_Embed, W_Char_Embed, forward_lstm, backward, d_out, c)
+function save_weights(epoch, conv1, W_word_Embed, W_Char_Embed, forward_lstm, backward, d_out, c)
     conv_cpu = conv1 |> cpu
     W_word_cpu = W_word_Embed |> cpu
     W_char_cpu = W_Char_Embed |> cpu
@@ -262,27 +276,26 @@ function save_weights(EPOCH, conv1, W_word_Embed, W_Char_Embed, forward_lstm, ba
     crf_cpu = c |> cpu
     d_cpu = d_out |> cpu
 
-    @save "./weights/conv_cpu$(EPOCH).bson" conv_cpu
-    @save "./weights/W_word_cpu$(EPOCH).bson" W_word_cpu
-    @save "./weights/W_char_cpu$(EPOCH).bson" W_char_cpu
-    @save "./weights/forward_lstm$(EPOCH).bson" forward_lstm_cpu
-    @save "./weights/backward_lstm$(EPOCH).bson" backward_lstm_cpu
-    @save "./weights/d_cpu.bson$(EPOCH)" d_cpu
-    @save "./weights/crf.bson$(EPOCH)" crf_cpu
+    @save "./weights/conv_cpu$(epoch).bson" conv_cpu
+    @save "./weights/W_word_cpu$(epoch).bson" W_word_cpu
+    @save "./weights/W_char_cpu$(epoch).bson" W_char_cpu
+    @save "./weights/forward_lstm$(epoch).bson" forward_lstm_cpu
+    @save "./weights/backward_lstm$(epoch).bson" backward_lstm_cpu
+    @save "./weights/d_cpu$(epoch).bson" d_cpu
+    @save "./weights/crf$(epoch).bson" crf_cpu
 end
-
 
 function train(EPOCHS)
     reset!(forward_lstm)
     reset!(backward)
     for epoch in 1:EPOCHS
-        println("----------------------- EPOCH : $epoch ----------------------")
         if epoch % 2 == 1
-            save_weights(epoch, conv_cpu, W_word_Embed, W_Char_Embed, forward_lstm, backward, d_out, c)
-            reset!(forward_lstm)
-            reset!(backward)
-            try_outs()
+            save_weights(epoch, conv1, W_word_Embed, W_Char_Embed, forward_lstm, backward, d_out, c)
         end
+        reset!(forward_lstm)
+        reset!(backward)
+        try_outs()
+        println("----------------------- Sarting with epoch : $(epoch) ----------------------")
 
         for d in data
             reset!(forward_lstm)
@@ -298,12 +311,11 @@ end
 train(50)
 reset!(forward_lstm)
 reset!(backward)
-save_weights(epoch, conv_cpu, W_word_Embed, W_Char_Embed, forward_lstm, backward, d_out, c)
+save_weights(51, conv_cpu, W_word_Embed, W_Char_Embed, forward_lstm, backward, d_out, c)
 try_outs()
 
 # batch size = 10
 
 # function test_raw_sentence # Convert unknown to UNK and to lowercase
 # Try with and without lowercased chars in char embedding
-# Try with and without trainable embeddings.
 # try: Preprocessing: Change n't => not and Shuffle and all numbers to 0
