@@ -8,9 +8,14 @@ using Flux
 using Flux: onehot, param, onehotbatch, Conv, LSTM, flip, Momentum, reset!, onecold
 using Tracker
 using BSON: @save, @load
-using CuArrays
 using LinearAlgebra
 println("Dependencies Loaded")
+
+device = :gpu
+
+if device == :gpu
+    using CuArrays
+end
 
 CHAR_EMBED_DIMS = 25
 WORD_EMBED_DIMS = 100
@@ -88,10 +93,16 @@ oh_seq(arr, f) = [f(element) for element in arr]
 
 # X_words_train = [oh_seq(sentence, onehotword) for sentence in X_train] # A Bunch of Sequences of words, i.e. sentences
 # X_chars_train = [oh_seq(sentence, onehotchars) for sentence in X_train] # A Bunch Sequences of Array of Chars, done to prevent repeated computations.
-X_input_train = [cu.(oh_seq(sentence, onehotinput)) for sentence in X_train]
+if device == :gpu
+    X_input_train = [cu.(oh_seq(sentence, onehotinput)) for sentence in X_train]
+else
+    X_input_train = [oh_seq(sentence, onehotinput) for sentence in X_train]
+end
 Y_oh_train = [oh_seq(tags_sequence, onehotlabel) for tags_sequence in Y_train]
 
-Y_oh_train = cu.(Y_oh_train)
+if device == :gpu
+    Y_oh_train = cu.(Y_oh_train)
+end
 
 X_input_dev = [oh_seq(sentence, onehotinput) for sentence in X_dev]
 Y_oh_dev = [oh_seq(tags_sequence, onehotlabel) for tags_sequence in Y_dev]
@@ -107,11 +118,16 @@ Y_oh_dev = [oh_seq(tags_sequence, onehotlabel) for tags_sequence in Y_dev]
 CNN_OUTPUT_SIZE = 30
 CONV_WINDOW_LENGTH = 3
 LSTM_STATE_SIZE = 200
-DROPOUT_RATE_CNN = DROPOUT_INPUT_EMBEDDING = DROPOUT_OUT_LAYER = 0.5
+DROPOUT_RATE_CNN = DROPOUT_INPUT_EMBEDDING = DROPOUT_OUT_LAYER = Float32(0.5)
 
 # 1. Dropout before conv, Max poll layer, PADDING on both sides, hyperparams = window size, output vector size.
-conv1 = Conv((CHAR_EMBED_DIMS, CONV_WINDOW_LENGTH), 1=>CNN_OUTPUT_SIZE, pad=(0,2))
-dropout1 = Dropout(DROPOUT_RATE_CNN)
+if device == :gpu
+    conv1 = Conv((CHAR_EMBED_DIMS, CONV_WINDOW_LENGTH), 1=>CNN_OUTPUT_SIZE, pad=(0,2)) |> gpu
+    dropout1 = Dropout(DROPOUT_RATE_CNN) |> gpu
+else
+    conv1 = Conv((CHAR_EMBED_DIMS, CONV_WINDOW_LENGTH), 1=>CNN_OUTPUT_SIZE, pad=(0,2))
+    dropout1 = Dropout(DROPOUT_RATE_CNN)
+end
 
 char_features = Chain(x -> W_Char_Embed * x,
                       x -> reshape(x, size(x)..., 1,1),
@@ -123,17 +139,32 @@ char_features = Chain(x -> W_Char_Embed * x,
 # 2. Input embeddings:
 # Maybe could use only the embeddings for the words needed
 
-W_word_Embed = param(W_word_Embed) |> gpu# For trainable
-get_word_embedding(w) = W_word_Embed * w |> gpu# works coz - onehot
+if device == :gpu
+    W_word_Embed = param(W_word_Embed) |> gpu# For trainable
+    get_word_embedding(w) = W_word_Embed * w |> gpu# works coz - onehot
+else
+    W_word_Embed = param(W_word_Embed)
+    get_word_embedding(w) = W_word_Embed * w
+end
 
 # Dropout before LSTM
-dropout_embed = Dropout(DROPOUT_INPUT_EMBEDDING) |> gpu
-input_embeddings((w, cs)) = dropout_embed(vcat(get_word_embedding(w), char_features(cs))) |> gpu
+if device == :gpu
+    dropout_embed = Dropout(DROPOUT_INPUT_EMBEDDING) |> gpu
+    input_embeddings((w, cs)) = dropout_embed(vcat(get_word_embedding(w), char_features(cs))) |> gpu
+else
+    dropout_embed = Dropout(DROPOUT_INPUT_EMBEDDING)
+    input_embeddings((w, cs)) = dropout_embed(vcat(get_word_embedding(w), char_features(cs)))
+end
 
 # 3. Bi-LSTM
 
-forward_lstm = LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE) |> gpu
-backward = LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE) |> gpu
+if device == :gpu
+    forward_lstm = LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE) |> gpu
+    backward = LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE) |> gpu
+else
+    forward_lstm = LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE)
+    backward = LSTM(CNN_OUTPUT_SIZE + WORD_EMBED_DIMS, LSTM_STATE_SIZE)
+end
 backward_lstm(x) = reverse(backward.(reverse(x)))
 
 bilstm_layer(x) = vcat.(forward_lstm.(x), backward_lstm(x))
@@ -143,24 +174,36 @@ bilstm_layer(x) = vcat.(forward_lstm.(x), backward_lstm(x))
 # 4. Softmax / CRF Layer
 # Dropout after LSTM
 
-dropout2 = Dropout(DROPOUT_OUT_LAYER) |> gpu
-d_out = Dense(LSTM_STATE_SIZE * 2, DENSE_OUT_SIZE + 2) |> gpu
+if device == :gpu
+    dropout2 = Dropout(DROPOUT_OUT_LAYER) |> gpu
+    d_out = Dense(LSTM_STATE_SIZE * 2, DENSE_OUT_SIZE + 2) |> gpu
+else
+    dropout2 = Dropout(DROPOUT_OUT_LAYER)
+    d_out = Dense(LSTM_STATE_SIZE * 2, DENSE_OUT_SIZE + 2)
+end
 
 m = Chain(x -> input_embeddings.(x),
                 bilstm_layer,
                 x -> dropout2.(x),
-                x -> d_out.(x)) |> gpu
+                x -> d_out.(x))
 
+if device == :gpu
+    m = gpu(m)
+end
 # dropout.(bilstm_layer(input_embeddings.(w_cs))) |> gpu
 
 using TextAnalysis: crf_loss, CRF
 
 Flux.@treelike TextAnalysis.CRF
-c = TextAnalysis.CRF(num_labels) |> gpu
 
-init_α = fill(-10000, (c.n + 2, 1))
+c = TextAnalysis.CRF(num_labels)
+
+init_α = Float32.(fill(-10000, (c.n + 2, 1)))
 init_α[c.n + 1] = 0
-init_α = cu(init_α)
+if device == :gpu
+    init_α = cu(init_α)
+    c = c |> gpu
+end
 
 loss(x, y) =  crf_loss(c, m(x), y, init_α)
 
@@ -285,9 +328,24 @@ function save_weights(epoch, conv1, W_word_Embed, W_Char_Embed, forward_lstm, ba
     @save "./weights/crf$(epoch).bson" crf_cpu
 end
 
+UPPER_BOUND = Float32(5.0)
+
+# Gradient Clipping
+grad_clipping(g) = min(g, UPPER_BOUND)
+
+# Backward
+function back!(p::Flux.Params, l, opt)
+    l = Tracker.hook(x -> grad_clipping(x), l)
+    grads = Tracker.gradient(() -> l, p)
+    Tracker.update!(opt, p, grads)
+    return
+end
+
 function train(EPOCHS)
     reset!(forward_lstm)
     reset!(backward)
+
+    ps = params(params(conv1)..., params(W_word_Embed)..., params(W_Char_Embed)..., params(forward_lstm, backward)..., params(d_out)..., params(c)...)
     for epoch in 1:EPOCHS
         if epoch % 2 == 1
             save_weights(epoch, conv1, W_word_Embed, W_Char_Embed, forward_lstm, backward, d_out, c)
@@ -295,13 +353,14 @@ function train(EPOCHS)
         reset!(forward_lstm)
         reset!(backward)
         try_outs()
-        println("----------------------- Sarting with epoch : $(epoch) ----------------------")
+        println("----------------------- Starting with epoch : $(epoch) ----------------------")
 
         for d in data
             reset!(forward_lstm)
             reset!(backward)
-            grads = Tracker.gradient(() -> loss(d[1], d[2]), params(params(conv1)..., params(W_word_Embed)..., params(W_Char_Embed)..., params(forward_lstm, backward)..., params(d_out)..., params(c)...))
-            Flux.Optimise.update!(opt,  params(params(conv1)..., params(W_word_Embed)..., params(W_Char_Embed)..., params(forward_lstm, backward)..., params(d_out)..., params(c)...), grads)
+
+            l = loss(d[1], d[2])
+            back!(ps, l, opt)
         end
         reset!(forward_lstm)
         reset!(backward)
