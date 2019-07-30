@@ -5,10 +5,12 @@ using TextAnalysis: CRF, crf_loss
 using WordTokenizers
 using Embeddings
 using Flux
-using Flux: onehot, param, onehotbatch, Conv, LSTM, flip, Momentum, reset!, onecold
+using Flux: onehot, param, onehotbatch, Conv, LSTM, flip, Momentum, reset!, onecold, batchseq
 using Tracker
 using BSON: @save, @load
 using LinearAlgebra
+using Base.Iterators: partition
+
 println("Dependencies Loaded")
 
 device = :gpu
@@ -57,18 +59,30 @@ UNK_Word = "<UNK>"
 UNK_Word_Idx = length(get_word_index) + 1
 embedding_vocab_length = length(get_word_index) + 1
 @assert UNK_Word ∉ collect(keys(get_word_index))
-
 get_word_index[UNK_Word] = UNK_Word_Idx
 get_word_from_index[UNK_Word_Idx] = UNK_Word
 W_word_Embed = hcat(W_word_Embed, rand(WORD_EMBED_DIMS))
+
+# One Vec for PAD chars
+PAD_Word = "<pad>"
+PAD_Word_Idx = length(get_word_index) + 1
+embedding_vocab_length = length(get_word_index) + 1
+@assert PAD_Word ∉ collect(keys(get_word_index))
+get_word_index[PAD_Word] = PAD_Word_Idx
+get_word_from_index[PAD_Word_Idx] = PAD_Word
+W_word_Embed = hcat(W_word_Embed, rand(WORD_EMBED_DIMS))
+
 W_word_Embed = Float32.(W_word_Embed)
 @assert size(W_word_Embed, 2) == embedding_vocab_length
 
 
 ##### Char Embeddings
 UNK_char = '¿'
+PAD_char = '█'
 @assert UNK_char ∉ alphabets
+@assert PAD_char ∉ alphabets
 push!(alphabets, UNK_char)
+push!(alphabets, PAD_char)
 sort!(unique!(alphabets))
 
 # using these indices to generate the flux one hot input Char embeddings vectors.
@@ -82,32 +96,65 @@ get_char_from_index = Dict(value => key for (key, value) in get_char_index)
 println("Embeddings Made")
 
 ############# Creating onehoot vectors (useful for embeddings lookup), convenient
-# TODO: Minibatches
+BATCH_SIZE = 10
+X_train = sort(X_train, by=length, alg=MergeSort)
+Y_train = sort(Y_train, by=length, alg=MergeSort) # For stable sorting
+
 onehotword(word) = onehot(get(get_word_index, lowercase(word), get_word_index[UNK_Word]), 1:embedding_vocab_length)
+onehotbatchword(words) = onehotbatch([get(get_word_index, lowercase(word), get_word_index[UNK_Word]) for word in words], 1:embedding_vocab_length)
 onehotchars(word) = onehotbatch([get(get_char_index, c, get_char_index[UNK_char]) for c in word], 1:length(alphabets))
 onehotlabel(label) = onehot(label, labels)
 onehotinput(word) = (onehot(get(get_word_index, lowercase(word), get_word_index[UNK_Word]), 1:embedding_vocab_length),
                 onehotbatch([get(get_char_index, c, get_char_index[UNK_char]) for c in word], 1:length(alphabets)))
 
+# align(k) = [[j[i]  for j in k] for i in 1:length(k[1])]
+# batch_char_input(ohed_chars, p) = [align(padded(b, p)) for b in collect(partition(ohed_chars, BATCH_SIZE))]
+# batches(xs, p) = [batchseq(b, p) for b in partition(xs, BATCH_SIZE)]
+
 oh_seq(arr, f) = [f(element) for element in arr]
 
-# X_words_train = [oh_seq(sentence, onehotword) for sentence in X_train] # A Bunch of Sequences of words, i.e. sentences
-# X_chars_train = [oh_seq(sentence, onehotchars) for sentence in X_train] # A Bunch Sequences of Array of Chars, done to prevent repeated computations.
-if device == :gpu
-    X_input_train = [cu.(oh_seq(sentence, onehotinput)) for sentence in X_train]
-else
-    X_input_train = [oh_seq(sentence, onehotinput) for sentence in X_train]
-end
-Y_oh_train = [oh_seq(tags_sequence, onehotlabel) for tags_sequence in Y_train]
+padded(b, p, m) = [length(elem) < m ? [elem..., repeat([p], m - length(elem))...] : elem for elem in b]
+padded(b, p) = padded(b, p, maximum(length.(b)))
 
-if device == :gpu
-    Y_oh_train = cu.(Y_oh_train)
-end
+align_chars_new(b, p, m) = [[[p, p, elem[i]..., repeat([p], m[i] - length(elem[i]))..., p, p] for i in 1:length(elem)] for elem in b]
+align_chars_new(b, p) = align_chars_new(b, p, [maximum([length(j[i]) for j in b])   for i in 1:length(b[1])])
 
-X_input_dev = [oh_seq(sentence, onehotinput) for sentence in X_dev]
-Y_oh_dev = [oh_seq(tags_sequence, onehotlabel) for tags_sequence in Y_dev]
+batch_oh_chars(o) = [[char_w_seq[i] for char_w_seq in o] for i in 1:length(o[1])]
+batch_new_chars(xs, p) = [batch_oh_chars(oh_seq.(align_chars_new(padded(b, p), '█'), onehotchars)) for b in partition(xs, BATCH_SIZE)]
+# X_chars_train = batch_char_input([oh_seq(sentence, onehotchars) for sentence in X_train], onehotchars("█")) # A Bunch Sequences of Array of Chars, done to prevent repeated computations.
+X_newchars_train = batch_new_chars([collect.(sentence) for sentence in X_train], collect("█"))
 
-@assert length.(X_train) == length.(X_input_train) == length.(Y_oh_train)
+padded_word_batches(b, p, m) = [[length(elem) < i ? p : elem[i] for elem in b] for i in 1:m]
+padded_word_batches(b, p) = padded_word_batches(b, p, maximum(length.(b)))
+X_words_train = [oh_seq(padded_word_batches(b, PAD_Word), onehotbatchword) for b in partition(X_train, BATCH_SIZE)] # A Bunch of Sequences of words, i.e. sentences
+
+X_input_train = [[(k,l) for (k,l) in zip(i,j)] for (i,j) in zip(X_words_train, X_newchars_train)]
+Y_oh_train = [oh_seq.(b, onehotlabel) for b in partition(Y_train, BATCH_SIZE)]
+deleteat!(Y_oh_train, length(Y_oh_train))
+deleteat!(X_input_train, length(X_input_train))
+
+X_newchars_dev = batch_new_chars([collect.(sentence) for sentence in X_dev], collect("█"))
+X_words_dev = [oh_seq(padded_word_batches(b, PAD_Word), onehotbatchword) for b in partition(X_dev, BATCH_SIZE)] # A Bunch of Sequences of words, i.e. sentences
+X_input_dev = [[(k,l) for (k,l) in zip(i,j)] for (i,j) in zip(X_words_dev, X_newchars_dev)]
+Y_oh_dev = [oh_seq.(b, onehotlabel) for b in partition(Y_dev, BATCH_SIZE)]
+deleteat!(Y_oh_dev, length(Y_oh_dev))
+deleteat!(X_input_dev, length(X_input_dev))
+
+# if device == :gpu
+#     X_input_train = [cu.(oh_seq(sentence, onehotinput)) for sentence in X_train]
+# else
+#     X_input_train = [oh_seq(sentence, onehotinput) for sentence in X_train]
+# end
+# Y_oh_train = [oh_seq(tags_sequence, onehotlabel) for tags_sequence in Y_train]
+#
+# if device == :gpu
+#     Y_oh_train = cu.(Y_oh_train)
+# end
+#
+# X_input_dev = [oh_seq(sentence, onehotinput) for sentence in X_dev]
+# Y_oh_dev = [oh_seq(tags_sequence, onehotlabel) for tags_sequence in Y_dev]
+#
+# @assert length.(X_train) == length.(X_input_train) == length.(Y_oh_train)
 
 #################### MODEL ######################
 # 1. Character Embeddings with CNNs
@@ -121,40 +168,25 @@ LSTM_STATE_SIZE = 200
 DROPOUT_RATE_CNN = DROPOUT_INPUT_EMBEDDING = DROPOUT_OUT_LAYER = Float32(0.5)
 
 # 1. Dropout before conv, Max poll layer, PADDING on both sides, hyperparams = window size, output vector size.
-if device == :gpu
-    conv1 = Conv((CHAR_EMBED_DIMS, CONV_WINDOW_LENGTH), 1=>CNN_OUTPUT_SIZE, pad=(0,2)) |> gpu
-    dropout1 = Dropout(DROPOUT_RATE_CNN) |> gpu
-else
-    conv1 = Conv((CHAR_EMBED_DIMS, CONV_WINDOW_LENGTH), 1=>CNN_OUTPUT_SIZE, pad=(0,2))
-    dropout1 = Dropout(DROPOUT_RATE_CNN)
-end
+W_Char_Embed = W_Char_Embed |> gpu
+conv1 = Conv((CHAR_EMBED_DIMS, CONV_WINDOW_LENGTH), 1=>CNN_OUTPUT_SIZE, pad=(0,2)) |> gpu
+dropout1 = Dropout(DROPOUT_RATE_CNN) |> gpu
 
-char_features = Chain(x -> W_Char_Embed * x,
-                      x -> reshape(x, size(x)..., 1,1),
+slice_embed(x) = W_Char_Embed * x
+char_features = Chain(x -> slice_embed.(x),
+                      x -> cat(x..., dims=4),
                       dropout1,
                       conv1,
                       x -> maximum(x, dims=2),
-                      x -> reshape(x, length(x),1))
+                      x -> reshape(x, CNN_OUTPUT_SIZE, BATCH_SIZE))
+# 2. Input embeddings
 
-# 2. Input embeddings:
-# Maybe could use only the embeddings for the words needed
-
-if device == :gpu
-    W_word_Embed = param(W_word_Embed) |> gpu# For trainable
-    get_word_embedding(w) = W_word_Embed * w |> gpu# works coz - onehot
-else
-    W_word_Embed = param(W_word_Embed)
-    get_word_embedding(w) = W_word_Embed * w
-end
+W_word_Embed = param(W_word_Embed) |> gpu # For trainable
+get_word_embedding(w) = W_word_Embed * w |> gpu # works coz - onehot
 
 # Dropout before LSTM
-if device == :gpu
-    dropout_embed = Dropout(DROPOUT_INPUT_EMBEDDING) |> gpu
-    input_embeddings((w, cs)) = dropout_embed(vcat(get_word_embedding(w), char_features(cs))) |> gpu
-else
-    dropout_embed = Dropout(DROPOUT_INPUT_EMBEDDING)
-    input_embeddings((w, cs)) = dropout_embed(vcat(get_word_embedding(w), char_features(cs)))
-end
+dropout_embed = Dropout(DROPOUT_INPUT_EMBEDDING) |> gpu
+input_embeddings((w, cs)) = dropout_embed(vcat(get_word_embedding(w), char_features(cs))) |> gpu
 
 # 3. Bi-LSTM
 
@@ -168,8 +200,6 @@ end
 backward_lstm(x) = reverse(backward.(reverse(x)))
 
 bilstm_layer(x) = vcat.(forward_lstm.(x), backward_lstm(x))
-
-# TODO: Bias vectors are initialized to zero, except the bias bf for the forget gate in LSTM , which is initialized to 1.0
 
 # 4. Softmax / CRF Layer
 # Dropout after LSTM
@@ -193,7 +223,6 @@ end
 # dropout.(bilstm_layer(input_embeddings.(w_cs))) |> gpu
 
 using TextAnalysis: crf_loss, CRF
-
 Flux.@treelike TextAnalysis.CRF
 
 c = TextAnalysis.CRF(num_labels)
@@ -205,7 +234,8 @@ if device == :gpu
     c = c |> gpu
 end
 
-loss(x, y) =  crf_loss(c, m(x), y, init_α)
+geti(x, i) = x[:, i]
+loss(x, y) = sum([crf_loss(c, [geti(x[j], i) for j in 1:length(y[i])], y[i], init_α) for i in 1:BATCH_SIZE])
 
 η = 0.015 # learning rate
 β = 0.05 # rate decay
@@ -341,6 +371,7 @@ function back!(p::Flux.Params, l, opt)
     return
 end
 
+
 function train(EPOCHS)
     reset!(forward_lstm)
     reset!(backward)
@@ -359,7 +390,7 @@ function train(EPOCHS)
             reset!(forward_lstm)
             reset!(backward)
 
-            l = loss(d[1], d[2])
+            l = loss(m(d[1]), d[2])
             back!(ps, l, opt)
         end
         reset!(forward_lstm)
