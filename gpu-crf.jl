@@ -120,25 +120,29 @@ align_chars_new(b, p, m) = [[[p, p, elem[i]..., repeat([p], m[i] - length(elem[i
 align_chars_new(b, p) = align_chars_new(b, p, [maximum([length(j[i]) for j in b])   for i in 1:length(b[1])])
 
 batch_oh_chars(o) = [[char_w_seq[i] for char_w_seq in o] for i in 1:length(o[1])]
-batch_new_chars(xs, p) = [batch_oh_chars(oh_seq.(align_chars_new(padded(b, p), '█'), onehotchars)) for b in partition(xs, BATCH_SIZE)]
+gpuit(x) = cu.(x)
+batch_new_chars(xs, p) = [gpuit.(batch_oh_chars(oh_seq.(align_chars_new(padded(b, p), '█'), onehotchars))) for b in partition(xs, BATCH_SIZE)]
 # X_chars_train = batch_char_input([oh_seq(sentence, onehotchars) for sentence in X_train], onehotchars("█")) # A Bunch Sequences of Array of Chars, done to prevent repeated computations.
 X_newchars_train = batch_new_chars([collect.(sentence) for sentence in X_train], collect("█"))
 
 padded_word_batches(b, p, m) = [[length(elem) < i ? p : elem[i] for elem in b] for i in 1:m]
 padded_word_batches(b, p) = padded_word_batches(b, p, maximum(length.(b)))
-X_words_train = [oh_seq(padded_word_batches(b, PAD_Word), onehotbatchword) for b in partition(X_train, BATCH_SIZE)] # A Bunch of Sequences of words, i.e. sentences
+X_words_train = [cu.(oh_seq(padded_word_batches(b, PAD_Word), onehotbatchword)) for b in partition(X_train, BATCH_SIZE)] # A Bunch of Sequences of words, i.e. sentences
 
 X_input_train = [[(k,l) for (k,l) in zip(i,j)] for (i,j) in zip(X_words_train, X_newchars_train)]
-Y_oh_train = [oh_seq.(b, onehotlabel) for b in partition(Y_train, BATCH_SIZE)]
+Y_oh_train = [cu.(oh_seq.(b, onehotlabel)) for b in partition(Y_train, BATCH_SIZE)]
 deleteat!(Y_oh_train, length(Y_oh_train))
 deleteat!(X_input_train, length(X_input_train))
 
+X_dev = sort(X_dev, by=length, alg=MergeSort)
+Y_dev = sort(Y_dev, by=length, alg=MergeSort) # For stable sorting
+
 X_newchars_dev = batch_new_chars([collect.(sentence) for sentence in X_dev], collect("█"))
-X_words_dev = [oh_seq(padded_word_batches(b, PAD_Word), onehotbatchword) for b in partition(X_dev, BATCH_SIZE)] # A Bunch of Sequences of words, i.e. sentences
+X_words_dev = [cu.(oh_seq(padded_word_batches(b, PAD_Word), onehotbatchword)) for b in partition(X_dev, BATCH_SIZE)] # A Bunch of Sequences of words, i.e. sentences
 X_input_dev = [[(k,l) for (k,l) in zip(i,j)] for (i,j) in zip(X_words_dev, X_newchars_dev)]
 Y_oh_dev = [oh_seq.(b, onehotlabel) for b in partition(Y_dev, BATCH_SIZE)]
-deleteat!(Y_oh_dev, length(Y_oh_dev))
-deleteat!(X_input_dev, length(X_input_dev))
+# deleteat!(Y_oh_dev, length(Y_oh_dev))
+# deleteat!(X_input_dev, length(X_input_dev))
 
 # if device == :gpu
 #     X_input_train = [cu.(oh_seq(sentence, onehotinput)) for sentence in X_train]
@@ -312,7 +316,7 @@ function find_recall(confusion_matrix)
     return sum([label_wise(labels_indices) for labels_indices in labels]) / 5
 end
 
-compare_label_to_oh(ohs, y) = sum([(a.ix == b.ix ? 1 : 0) for (a, b) in zip(ohs, y)])
+# compare_label_to_oh(ohs, y) = sum([(a.ix == b.ix ? 1 : 0) for (a, b) in zip(ohs, y)])
 function try_outs()
     Flux.testmode!(dropout1)
     Flux.testmode!(dropout2)
@@ -323,10 +327,14 @@ function try_outs()
         reset!(forward_lstm)
         reset!(backward)
         x_seq = m(x)
-        ohs = TextAnalysis.viterbi_decode(cpu(c), cpu.(x_seq), cpu(init_α))
+        sum([crf_loss(c, [geti(x_seq[j], i) for j in 1:length(y[i])], y[i], init_α) for i in 1:BATCH_SIZE])
 
-        for d in zip(ohs, y)
-            confusion_matrix[d[1].ix, d[2].ix] += 1
+        ohs = [TextAnalysis.viterbi_decode(cpu(c), cpu.([geti(x_seq[j], i) for j in 1:length(y[i])]), cpu(init_α)) for i in 1:BATCH_SIZE]
+
+        for i in 1:BATCH_SIZE
+            for d in zip(ohs[i], y[i])
+                confusion_matrix[d[1].ix, d[2].ix] += 1
+            end
         end
     end
 
