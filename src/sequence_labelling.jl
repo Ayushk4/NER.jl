@@ -1,6 +1,6 @@
 using Flux, Tracker, TextAnalysis
 using BSON: load
-using Flux: onehot, onehotbatch
+using Flux: onehot, onehotbatch, reset!
 
 mutable struct BiLSTM_CNN_CRF_Model{C, W, L, D, O, A}
     labels::Array{String, 1} # List of Labels
@@ -64,6 +64,8 @@ function (a::BiLSTM_CNN_CRF_Model)(x)
               x -> (a.d_out).(x))
 
     oh_outs = viterbi_decode(a.c, m(x), a.init_α)
+    reset!(a.backward)
+    reset!(a.forward_lstm)
     [a.labels[oh.ix] for oh in oh_outs]
 end
 
